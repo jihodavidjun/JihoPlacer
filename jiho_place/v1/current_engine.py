@@ -225,6 +225,8 @@ class JihoPlacer:
         self.soft_global_dropped_candidates = ""
         self.basin_escape_preselection_log = ""
         self.flow_drag_log = ""
+        self.random_basin_log = ""
+        self.random_basin_preselection_log = ""
         self._candidate_parent_label: Dict[str, str] = {}
         self._candidate_parent_metrics: Dict[str, Dict[str, float]] = {}
         self._profile_params_by_label: Dict[str, str] = {}
@@ -448,6 +450,8 @@ class JihoPlacer:
         self.soft_global_dropped_candidates = ""
         self.basin_escape_preselection_log = ""
         self.flow_drag_log = ""
+        self.random_basin_log = ""
+        self.random_basin_preselection_log = ""
         self._profile_params_by_label = {}
         runtime_parts: Dict[str, float] = {}
 
@@ -710,6 +714,25 @@ class JihoPlacer:
                 relaxed = self._repair_all_overlaps(relaxed, movable, sizes, half_w, half_h, cw, ch)
                 candidates.append((self._surrogate_cost(relaxed, edges, owner_pos, benchmark, sizes), relaxed, False, f"barycenter_s{seed}", None))
         runtime_parts["local"] = time.time() - t0
+
+        if os.environ.get("JIHO_RANDOM_BASIN_PROBE", "0") == "1":
+            t0 = time.time()
+            random_candidates = self._random_basin_probe_candidates(
+                candidates=candidates,
+                benchmark=benchmark,
+                movable=movable,
+                sizes=sizes,
+                half_w=half_w,
+                half_h=half_h,
+                cw=cw,
+                ch=ch,
+                edges=edges,
+            )
+            candidates.extend(random_candidates)
+            runtime_parts["random_basin"] = time.time() - t0
+        else:
+            self.random_basin_log = "disabled"
+            self.random_basin_preselection_log = ""
 
         if not candidates:
             pos = self._legalize(initial_hard.copy(), movable, sizes, half_w, half_h, cw, ch, n)
@@ -3516,6 +3539,218 @@ class JihoPlacer:
             direction = np.array([1.0, 0.0], dtype=np.float64)
             norm = 1.0
         return direction / norm
+
+    def _random_basin_probe_candidates(
+        self,
+        candidates: List[Candidate],
+        benchmark: Benchmark,
+        movable: np.ndarray,
+        sizes: np.ndarray,
+        half_w: np.ndarray,
+        half_h: np.ndarray,
+        cw: float,
+        ch: float,
+        edges: List[Edge],
+    ) -> List[Candidate]:
+        if os.environ.get("JIHO_RANDOM_BASIN_PROBE", "0") != "1":
+            self.random_basin_log = "disabled"
+            return []
+        if not candidates or not edges:
+            self.random_basin_log = "skipped=no_candidates_or_edges"
+            return []
+
+        pool = [c for c in candidates if c[4] is not None]
+        if not pool:
+            pool = candidates
+
+        def parent_rank(candidate: Candidate) -> Tuple[int, float]:
+            label = candidate[3]
+            if "congestion_refined" in label:
+                priority = 0
+            elif "hotspot_refined" in label:
+                priority = 1
+            elif "spread_cong" in label and "_refined" in label:
+                priority = 2
+            elif "soft_global_topo_" in label:
+                priority = 3
+            elif "soft_global" in label:
+                priority = 4
+            else:
+                priority = 5
+            return priority, float(candidate[0])
+
+        base = min(pool, key=parent_rank)
+        _base_surrogate, base_hard, _force, base_label, base_full = base
+        n_hard = int(benchmark.num_hard_macros)
+        n_macros = int(benchmark.num_macros)
+        span = max(float(cw), float(ch), 1.0e-9)
+
+        if base_full is None:
+            base_full = benchmark.macro_positions.clone()
+            base_full[:n_hard] = torch.tensor(base_hard, dtype=torch.float32)
+            base_full = self._repair_hard_bounds_tensor(base_full, benchmark)
+            base_full = self._repair_soft_bounds_tensor(base_full, benchmark)
+            if benchmark.macro_fixed.any():
+                base_full[benchmark.macro_fixed] = benchmark.macro_positions[benchmark.macro_fixed]
+
+        base_np = base_full[:n_macros].detach().cpu().numpy().astype(np.float64)
+        base_density = self._estimate_density_overflow_np(base_np, benchmark)
+        base_owner = self._owner_positions_from_placement(base_full, benchmark)
+        base_cheap_cong = self._estimate_congestion_overflow_np(base_owner, edges, benchmark)
+        base_style_cong = self._estimate_exact_style_congestion_overflow_np(base_np, benchmark)
+
+        grid = self._exact_style_congestion_map_np(base_np, benchmark)
+        if grid.size == 0 or not np.any(grid > 0.0):
+            self.random_basin_log = f"skipped=empty_congestion_map|parent={base_label}"
+            return []
+        rows, cols = grid.shape
+        cell_w = float(cw) / max(int(cols), 1)
+        cell_h = float(ch) / max(int(rows), 1)
+        hot_r, hot_c = np.unravel_index(int(np.argmax(grid)), grid.shape)
+        hot_center = np.array([(hot_c + 0.5) * cell_w, (hot_r + 0.5) * cell_h], dtype=np.float64)
+
+        fixed = benchmark.macro_fixed[:n_macros].detach().cpu().numpy().astype(bool)
+        all_sizes = benchmark.macro_sizes[:n_macros].detach().cpu().numpy().astype(np.float64)
+        degree = np.zeros(n_macros, dtype=np.float64)
+        for a_raw, b_raw, weight_raw in edges:
+            a, b, weight = int(a_raw), int(b_raw), float(weight_raw)
+            if 0 <= a < n_macros:
+                degree[a] += weight
+            if 0 <= b < n_macros:
+                degree[b] += weight
+
+        areas = np.maximum(all_sizes[:n_hard, 0] * all_sizes[:n_hard, 1], 1.0e-9)
+        area_norm = areas / max(float(np.mean(areas)), 1.0e-9)
+        positive_degree = degree[:n_hard][degree[:n_hard] > 0.0]
+        degree_scale = max(float(np.percentile(positive_degree, 90)) if positive_degree.size else 1.0, 1.0e-9)
+        hot_scores: List[Tuple[float, int, int, int]] = []
+        for idx in range(n_hard):
+            if not bool(movable[idx]) or bool(fixed[idx]):
+                continue
+            r, c = self._flow_drag_cell(base_np[idx], cw, ch, rows, cols)
+            local = float(grid[r, c])
+            if local <= 0.0:
+                continue
+            cell_dist = math.hypot(float(r - hot_r), float(c - hot_c))
+            degree_boost = 0.75 + 0.35 * min(float(degree[idx]) / degree_scale, 3.0)
+            score = local * math.sqrt(float(area_norm[idx])) * degree_boost / (1.0 + 0.08 * cell_dist)
+            hot_scores.append((score, idx, r, c))
+        hot_scores.sort(reverse=True)
+
+        macro_count = max(1, int(os.environ.get("JIHO_RANDOM_BASIN_MACROS", "6")))
+        count = max(1, int(os.environ.get("JIHO_RANDOM_BASIN_COUNT", "12")))
+        radius = max(0.0, float(os.environ.get("JIHO_RANDOM_BASIN_RADIUS", "0.18"))) * span
+        if not hot_scores or radius <= 0.0:
+            self.random_basin_log = f"skipped=no_hot_macros|parent={base_label}|radius={radius / span:.4f}"
+            return []
+
+        hot_pool = [idx for _score, idx, _r, _c in hot_scores[: max(macro_count * 3, macro_count)]]
+        rng = np.random.default_rng(int(self.base_seed) + 73021)
+        pair_sep_x = (sizes[:, None, 0] + sizes[None, :, 0]) / 2.0
+        pair_sep_y = (sizes[:, None, 1] + sizes[None, :, 1]) / 2.0
+        logs: List[str] = [
+            "enabled|"
+            f"parent={base_label}|base_density={base_density:.4f}|base_cheap_cong={base_cheap_cong:.4f}|"
+            f"base_style_cong={base_style_cong:.4f}|hot_cell={hot_r},{hot_c}:{float(grid[hot_r, hot_c]):.4f}|"
+            f"selected={','.join(str(idx) for idx in hot_pool[:macro_count])}|"
+            f"hot_scores={','.join(f'{idx}:{score:.4f}' for score, idx, _r, _c in hot_scores[:min(16, len(hot_scores))])}"
+        ]
+        results: List[Candidate] = []
+
+        for probe_id in range(count):
+            if len(hot_pool) <= macro_count:
+                group = list(hot_pool[:macro_count])
+            else:
+                group = list(rng.choice(hot_pool, size=macro_count, replace=False).astype(int))
+                if probe_id == 0 and hot_pool[0] not in group:
+                    group[0] = hot_pool[0]
+            group = sorted(set(int(x) for x in group if 0 <= int(x) < n_hard and bool(movable[int(x)]) and not bool(fixed[int(x)])))
+            if not group:
+                logs.append(f"probe={probe_id}|drop=empty_group")
+                continue
+
+            trial_np = base_np.copy()
+            mode = "shuffle" if len(group) >= 2 and probe_id % 3 == 0 else "nearby"
+            original_positions = trial_np[group].copy()
+            if mode == "shuffle":
+                perm = rng.permutation(len(group))
+                shuffled = original_positions[perm]
+                for idx, new_pos in zip(group, shuffled):
+                    trial_np[idx, 0] = np.clip(float(new_pos[0]), float(half_w[idx]), float(cw - half_w[idx]))
+                    trial_np[idx, 1] = np.clip(float(new_pos[1]), float(half_h[idx]), float(ch - half_h[idx]))
+            else:
+                for idx in group:
+                    current = trial_np[idx].copy()
+                    best_pos = current.copy()
+                    best_heat = float("inf")
+                    for _attempt in range(10):
+                        theta = float(rng.uniform(0.0, math.tau))
+                        dist = float(rng.uniform(0.25, 1.0)) * radius
+                        if rng.random() < 0.45:
+                            away = current - hot_center
+                            norm = float(np.linalg.norm(away))
+                            if norm > 1.0e-9:
+                                direction = away / norm
+                            else:
+                                direction = np.array([math.cos(theta), math.sin(theta)], dtype=np.float64)
+                        else:
+                            direction = np.array([math.cos(theta), math.sin(theta)], dtype=np.float64)
+                        candidate_pos = current + direction * dist
+                        candidate_pos[0] = np.clip(candidate_pos[0], half_w[idx], cw - half_w[idx])
+                        candidate_pos[1] = np.clip(candidate_pos[1], half_h[idx], ch - half_h[idx])
+                        rr, cc = self._flow_drag_cell(candidate_pos, cw, ch, rows, cols)
+                        heat = float(grid[rr, cc]) + 0.015 * float(np.linalg.norm(candidate_pos - current)) / span
+                        if heat < best_heat:
+                            best_heat = heat
+                            best_pos = candidate_pos
+                    trial_np[idx] = best_pos
+
+            pre_repair_np = trial_np.copy()
+            pre_disp = np.linalg.norm(pre_repair_np[:n_macros] - base_np[:n_macros], axis=1)
+            pre_mean = float(np.mean(pre_disp) / span) if pre_disp.size else 0.0
+            trial_hard = trial_np[:n_hard].copy()
+            if self._any_overlap(trial_hard, group, pair_sep_x, pair_sep_y, gap=0.0):
+                trial_hard = self._repair_all_overlaps(trial_hard, movable, sizes, half_w, half_h, cw, ch)
+                trial_hard = self._clip_hard_np(trial_hard, benchmark)
+                trial_np[:n_hard] = trial_hard
+
+            trial_full = base_full.clone()
+            trial_full[:n_macros] = torch.tensor(trial_np, dtype=torch.float32)
+            trial_full = self._repair_soft_bounds_tensor(trial_full, benchmark)
+            trial_full = self._repair_hard_bounds_tensor(trial_full, benchmark)
+            if benchmark.macro_fixed.any():
+                trial_full[benchmark.macro_fixed] = benchmark.macro_positions[benchmark.macro_fixed]
+            final_np = trial_full[:n_macros].detach().cpu().numpy().astype(np.float64)
+            final_hard = final_np[:n_hard].copy()
+            final_disp = np.linalg.norm(final_np[:n_macros] - base_np[:n_macros], axis=1)
+            final_mean = float(np.mean(final_disp) / span) if final_disp.size else 0.0
+            hard_mean = float(np.mean(final_disp[:n_hard]) / span) if n_hard else 0.0
+            final_max = float(np.max(final_disp) / span) if final_disp.size else 0.0
+            legal_disp = float(np.mean(np.linalg.norm(final_np[:n_macros] - pre_repair_np[:n_macros], axis=1)) / span)
+            density_after = self._estimate_density_overflow_np(final_np, benchmark)
+            style_after = self._estimate_exact_style_congestion_overflow_np(final_np, benchmark)
+            owner = self._owner_positions_from_placement(trial_full, benchmark)
+            cheap_after = self._estimate_congestion_overflow_np(owner, edges, benchmark)
+            label = "random_basin_probe" if not results else f"random_basin_probe_{probe_id:02d}"
+            surrogate = self._surrogate_cost(final_hard, edges, owner, benchmark, sizes)
+            candidate = (surrogate, final_hard, True, label, trial_full)
+            results.append(candidate)
+
+            orig_token = "/".join(f"{idx}:{original_positions[k,0]:.3f},{original_positions[k,1]:.3f}" for k, idx in enumerate(group[:8]))
+            final_token = "/".join(f"{idx}:{final_np[idx,0]:.3f},{final_np[idx,1]:.3f}" for idx in group[:8])
+            logs.append(
+                f"{label}|mode={mode}|group={','.join(str(x) for x in group)}|radius={radius / span:.4f}|"
+                f"orig={orig_token}|pert={final_token}|pre_mean={pre_mean:.5f}|post_mean={final_mean:.5f}|"
+                f"hard_mean={hard_mean:.5f}|post_max={final_max:.5f}|legal_disp={legal_disp:.5f}|"
+                f"density_before={base_density:.4f}|density_after={density_after:.4f}|"
+                f"style_before={base_style_cong:.4f}|style_after={style_after:.4f}|"
+                f"cheap_before={base_cheap_cong:.4f}|cheap_after={cheap_after:.4f}|keep=generated"
+            )
+
+        if not results:
+            logs.append("skipped=no_generated_candidates")
+        self.random_basin_log = ";".join(logs[: max(24, min(48, count + 4))])
+        return results
 
     def _soft_global_density_spread_candidate(
         self,
@@ -6473,6 +6708,8 @@ class JihoPlacer:
             return "congestion_refined"
         if "congestion_flow_drag" in base:
             return "congestion_flow_drag"
+        if "random_basin_probe" in base:
+            return "random_basin_probe"
         if "exact_polished" in base:
             return "exact_polished"
         if "spread_cong" in base:
@@ -6806,6 +7043,25 @@ class JihoPlacer:
                     f"{self.flow_drag_log};flow_drag_force_exact=1|kept={flow['label']}|reason=debug_force"
                 )
 
+        random_force_text = ""
+        if (
+            os.environ.get("JIHO_RANDOM_BASIN_PROBE", "0") == "1"
+            and os.environ.get("JIHO_RANDOM_BASIN_FORCE_EXACT", "1") == "1"
+        ):
+            random_probe = min(
+                (r for r in records if str(r["family"]) == "random_basin_probe"),
+                key=lambda r: float(r["cheap_score"]),
+                default=None,
+            )
+            if random_probe is not None:
+                if all(id(random_probe["candidate"]) != id(r["candidate"]) for r in selected):
+                    selected.append(random_probe)
+                random_force_text = (
+                    f"random_basin_force_exact=1|kept={random_probe['label']}|"
+                    f"rank={float(random_probe['cheap_score']):.6f}|reason=debug_force"
+                )
+                self.random_basin_log = f"{self.random_basin_log};{random_force_text}"
+
         if not selected and distance_kept:
             selected.append(distance_kept[0])
         selected_ids = {id(r["candidate"]) for r in selected}
@@ -6823,6 +7079,20 @@ class JihoPlacer:
             f"kept_meta={'/'.join(kept_rows[:18])}|"
             f"dropped={'/'.join(dropped[:36])}"
         )
+        if os.environ.get("JIHO_RANDOM_BASIN_PROBE", "0") == "1":
+            random_kept = [
+                f"{r['label']}|rank={float(r['cheap_score']):.6f}|den={float(r.get('density', 0.0)):.4f}|"
+                f"cong={float(r.get('congestion', 0.0)):.4f}|style_cong={float(r.get('style_congestion', 0.0)):.4f}|"
+                f"disp={float(r.get('novelty', 0.0)):.5f}"
+                for r in selected
+                if str(r["family"]) == "random_basin_probe"
+            ]
+            random_dropped = [item for item in dropped if "random_basin_probe" in item]
+            self.random_basin_preselection_log = (
+                f"{random_force_text or 'random_basin_force_exact=0'}|"
+                f"kept={'/'.join(random_kept[:12])}|"
+                f"dropped={'/'.join(random_dropped[:24])}"
+            )
         return self._dedupe_candidates([r["candidate"] for r in selected], benchmark)
 
     def _candidate_macro_positions_np(self, candidate: Candidate, benchmark: Benchmark) -> np.ndarray:
@@ -6853,7 +7123,7 @@ class JihoPlacer:
             congestion = self._estimate_exact_style_congestion_overflow_np(macro_pos, benchmark)
         else:
             congestion = self._estimate_congestion_overflow_np(owner, edges, benchmark) if edges else 0.0
-        if bool(profile["large_high_congestion"]) or family == "congestion_flow_drag":
+        if bool(profile["large_high_congestion"]) or family in {"congestion_flow_drag", "random_basin_probe"}:
             style_congestion = self._estimate_exact_style_congestion_overflow_np(macro_pos, benchmark)
         else:
             style_congestion = float(congestion)
@@ -7032,6 +7302,12 @@ class JihoPlacer:
                 f"style_c={float(diag['style_congestion']):.6f}|style_hot={float(diag['style_hot']):.6f}|"
                 f"style_like={float(diag['style_like']):.6f}{parent_text}|ov={overlaps}|exact_s={exact_elapsed:.3f}"
             )
+            if str(diag["family"]) == "random_basin_probe":
+                self.random_basin_log = (
+                    f"{self.random_basin_log};exact|label={scored_label}|proxy={raw_proxy:.6f}|"
+                    f"wl={wirelength:.6f}|density={density:.6f}|congestion={congestion:.6f}|"
+                    f"overlaps={overlaps}|exact_s={exact_elapsed:.3f}"
+                )
             alignment_rows.append(
                 f"{base}|cheap_{diag['cheap_align']}|style_{diag['style_align']}"
             )

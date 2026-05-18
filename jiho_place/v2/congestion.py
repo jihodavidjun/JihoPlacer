@@ -7,6 +7,7 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from jiho_place.v2.density import GridSize, bin_edges, macro_bin_utilization, normalize_grid_size
+from jiho_place.v2.objectives import default_lse_gamma
 from jiho_place.v2.placement_state import PlacementState
 
 
@@ -99,6 +100,84 @@ def route_demand_overflow(
             "blockage_max": _max_or_zero(blockage),
             "h_demand_max": _max_or_zero(h_demand),
             "v_demand_max": _max_or_zero(v_demand),
+            "congestion_max_overflow": _max_or_zero(overflow),
+            "congestion_mean_overflow": _mean_or_zero(overflow),
+            "congestion_hot_bins": int((overflow > 0.0).sum().detach().cpu().item()) if overflow.numel() else 0,
+        }
+    return loss, stats
+
+
+def differentiable_routing_congestion(
+    state: PlacementState,
+    positions: Optional[torch.Tensor] = None,
+    grid_size: Optional[GridSize] = None,
+    capacity: float = 1.5,
+    gamma: Optional[float] = None,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """Smooth bbox route-demand congestion surrogate for v2 refinement."""
+
+    macro_pos = state.positions if positions is None else positions
+    if not state.nets:
+        zero = macro_pos.sum() * 0.0
+        return zero, _empty_stats()
+
+    if grid_size is None:
+        rows = max(1, int(state.metadata.get("grid_rows", 0) or 0))
+        cols = max(1, int(state.metadata.get("grid_cols", rows) or rows))
+        if rows <= 1 and cols <= 1:
+            rows = cols = 32
+    else:
+        rows, cols = normalize_grid_size(grid_size)
+    rows = max(1, int(rows))
+    cols = max(1, int(cols))
+
+    x0, x1, y0, y1 = bin_edges(state, (rows, cols))
+    all_pos = state.owner_positions(macro_pos)
+    inv_temp = float(gamma) if gamma is not None else default_lse_gamma(state)
+    inv_temp = max(inv_temp, 1.0e-9)
+    cell_size = max((float(state.canvas_width) / cols * float(state.canvas_height) / rows) ** 0.5, 1.0e-6)
+    m_scale = float(max(rows, cols, 1))
+    demand = torch.zeros((rows, cols), dtype=state.dtype, device=state.device)
+    active = 0
+
+    for net_id, owners in enumerate(state.nets):
+        if int(owners.numel()) < 2:
+            continue
+        pts = all_pos.index_select(0, owners) + state.net_pin_offsets[net_id]
+        x = pts[:, 0]
+        y = pts[:, 1]
+        xmax = torch.logsumexp(inv_temp * x, dim=0) / inv_temp
+        xmin = -torch.logsumexp(-inv_temp * x, dim=0) / inv_temp
+        ymax = torch.logsumexp(inv_temp * y, dim=0) / inv_temp
+        ymin = -torch.logsumexp(-inv_temp * y, dim=0) / inv_temp
+        width = torch.clamp(xmax - xmin, min=cell_size * 0.25)
+        height = torch.clamp(ymax - ymin, min=cell_size * 0.25)
+        hpwl = width + height
+
+        ox = torch.relu(torch.minimum(xmax, x1) - torch.maximum(xmin, x0))
+        oy = torch.relu(torch.minimum(ymax, y1) - torch.maximum(ymin, y0))
+        cover = oy[:, None] * ox[None, :]
+        cover = cover / torch.clamp(cover.sum(), min=1.0e-12)
+        weight = state.net_weights[net_id] if net_id < int(state.net_weights.numel()) else torch.tensor(
+            1.0, dtype=state.dtype, device=state.device
+        )
+        net_demand = torch.abs(weight) * hpwl / (m_scale * cell_size)
+        demand = demand + net_demand * cover
+        active += 1
+
+    if active == 0:
+        zero = macro_pos.sum() * 0.0
+        return zero, _empty_stats()
+
+    overflow = torch.relu(demand - float(capacity))
+    loss = overflow.pow(2).sum() / float(rows * cols)
+    with torch.no_grad():
+        stats = {
+            "demand_max": _max_or_zero(demand),
+            "capacity_min": float(capacity),
+            "overflow_max": _max_or_zero(overflow),
+            "overflow_mean": _mean_or_zero(overflow),
+            "hot_bin_count": int((overflow > 0.0).sum().detach().cpu().item()) if overflow.numel() else 0,
             "congestion_max_overflow": _max_or_zero(overflow),
             "congestion_mean_overflow": _mean_or_zero(overflow),
             "congestion_hot_bins": int((overflow > 0.0).sum().detach().cpu().item()) if overflow.numel() else 0,

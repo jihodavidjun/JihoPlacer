@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -24,30 +25,147 @@ def smooth_hpwl(
     if not state.nets:
         return macro_pos.sum() * 0.0
 
+    net_node_idx, net_mask, net_offsets, net_weights = _batched_net_data(state)
+    if int(net_node_idx.shape[0]) == 0:
+        return macro_pos.sum() * 0.0
     all_pos = state.owner_positions(macro_pos)
     temp = float(gamma) if gamma is not None else max(state.span * 0.015, 1.0e-3)
-    total = macro_pos.sum() * 0.0
-    weight_total = 0.0
+    pts = all_pos.index_select(0, net_node_idx.reshape(-1)).reshape(net_node_idx.shape[0], net_node_idx.shape[1], 2)
+    pts = pts + net_offsets
+    neg_inf = torch.tensor(float("-inf"), dtype=pts.dtype, device=pts.device)
+    x = pts[:, :, 0] / temp
+    y = pts[:, :, 1] / temp
+    hpwl = temp * (
+        torch.logsumexp(torch.where(net_mask, x, neg_inf), dim=1)
+        + torch.logsumexp(torch.where(net_mask, -x, neg_inf), dim=1)
+        + torch.logsumexp(torch.where(net_mask, y, neg_inf), dim=1)
+        + torch.logsumexp(torch.where(net_mask, -y, neg_inf), dim=1)
+    )
+    weights = torch.abs(net_weights.to(device=pts.device, dtype=pts.dtype))
+    weight_total = torch.clamp(weights.sum(), min=1.0e-12)
+    return (weights * hpwl).sum() / (weight_total * state.span)
 
+
+def default_lse_gamma(state: PlacementState) -> float:
+    """Inverse-temperature gamma for refined log-sum-exp HPWL."""
+
+    if hasattr(state, "net_mask"):
+        active_nets = max(int(getattr(state, "net_mask").shape[0]), 1)
+    else:
+        active_nets = max(sum(1 for owners in state.nets if int(owners.numel()) >= 2), 1)
+    chip_dimension = math.sqrt(max(float(state.canvas_width) * float(state.canvas_height), 1.0e-12))
+    return 1.0 / max(0.1 * chip_dimension / math.sqrt(float(active_nets)), 1.0e-6)
+
+
+def smooth_hpwl_lse(
+    state: PlacementState,
+    positions: Optional[torch.Tensor] = None,
+    gamma: Optional[float] = None,
+) -> torch.Tensor:
+    """Log-sum-exp HPWL using gamma as the inverse smoothing temperature."""
+
+    macro_pos = state.positions if positions is None else positions
+    if not state.nets:
+        return macro_pos.sum() * 0.0
+
+    net_node_idx, net_mask, net_offsets, net_weights = _batched_net_data(state)
+    if int(net_node_idx.shape[0]) == 0:
+        return macro_pos.sum() * 0.0
+    all_pos = state.owner_positions(macro_pos)
+    inv_temp = float(gamma) if gamma is not None else default_lse_gamma(state)
+    inv_temp = max(inv_temp, 1.0e-9)
+    pts = all_pos.index_select(0, net_node_idx.reshape(-1)).reshape(net_node_idx.shape[0], net_node_idx.shape[1], 2)
+    pts = pts + net_offsets
+    neg_inf = torch.tensor(float("-inf"), dtype=pts.dtype, device=pts.device)
+    x = pts[:, :, 0]
+    y = pts[:, :, 1]
+    hpwl = (
+        torch.logsumexp(torch.where(net_mask, inv_temp * x, neg_inf), dim=1)
+        + torch.logsumexp(torch.where(net_mask, -inv_temp * x, neg_inf), dim=1)
+        + torch.logsumexp(torch.where(net_mask, inv_temp * y, neg_inf), dim=1)
+        + torch.logsumexp(torch.where(net_mask, -inv_temp * y, neg_inf), dim=1)
+    ) / inv_temp
+    weights = torch.abs(net_weights.to(device=pts.device, dtype=pts.dtype))
+    weight_total = torch.clamp(weights.sum(), min=1.0e-12)
+    return (weights * hpwl).sum() / (weight_total * state.span)
+
+
+def _batched_net_data(
+    state: PlacementState,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    if not all(
+        hasattr(state, name)
+        for name in ("net_node_idx", "net_mask", "net_pin_offset_tensor", "net_weight_tensor")
+    ):
+        _build_batched_net_data(state)
+    return (
+        getattr(state, "net_node_idx"),
+        getattr(state, "net_mask"),
+        getattr(state, "net_pin_offset_tensor"),
+        getattr(state, "net_weight_tensor"),
+    )
+
+
+def _build_batched_net_data(state: PlacementState) -> None:
+    owner_count = state.num_macros + int(state.port_positions.shape[0])
+    usable = []
     for net_id, owners in enumerate(state.nets):
         if int(owners.numel()) < 2:
             continue
-        pts = all_pos.index_select(0, owners) + state.net_pin_offsets[net_id]
-        x = pts[:, 0] / temp
-        y = pts[:, 1] / temp
-        hpwl = temp * (
-            torch.logsumexp(x, dim=0)
-            + torch.logsumexp(-x, dim=0)
-            + torch.logsumexp(y, dim=0)
-            + torch.logsumexp(-y, dim=0)
+        owners = owners.to(device=state.device, dtype=torch.long).flatten()
+        offsets = state.net_pin_offsets[net_id].to(device=state.device, dtype=state.dtype)
+        valid = (owners >= 0) & (owners < owner_count)
+        owners = owners[valid]
+        offsets = offsets[valid]
+        if int(owners.numel()) < 2:
+            continue
+        weight = state.net_weights[net_id] if net_id < int(state.net_weights.numel()) else torch.tensor(
+            1.0, dtype=state.dtype, device=state.device
         )
-        weight = float(state.net_weights[net_id].item()) if net_id < int(state.net_weights.numel()) else 1.0
-        total = total + weight * hpwl
-        weight_total += abs(weight)
+        usable.append((owners, offsets, weight.to(device=state.device, dtype=state.dtype)))
 
-    if weight_total <= 0.0:
-        return macro_pos.sum() * 0.0
-    return total / (weight_total * state.span)
+    if not usable:
+        setattr(state, "net_node_idx", torch.zeros((0, 1), dtype=torch.long, device=state.device))
+        setattr(state, "net_mask", torch.zeros((0, 1), dtype=torch.bool, device=state.device))
+        setattr(state, "net_pin_offset_tensor", torch.zeros((0, 1, 2), dtype=state.dtype, device=state.device))
+        setattr(state, "net_weight_tensor", torch.zeros((0,), dtype=state.dtype, device=state.device))
+        return
+
+    max_degree = max(int(owners.numel()) for owners, _offsets, _weight in usable)
+    count = len(usable)
+    net_node_idx = torch.zeros((count, max_degree), dtype=torch.long, device=state.device)
+    net_mask = torch.zeros((count, max_degree), dtype=torch.bool, device=state.device)
+    net_offsets = torch.zeros((count, max_degree, 2), dtype=state.dtype, device=state.device)
+    net_weights = torch.empty((count,), dtype=state.dtype, device=state.device)
+    for row, (owners, offsets, weight) in enumerate(usable):
+        degree = int(owners.numel())
+        net_node_idx[row, :degree] = owners
+        net_mask[row, :degree] = True
+        net_offsets[row, :degree] = offsets
+        net_weights[row] = weight
+
+    setattr(state, "net_node_idx", net_node_idx)
+    setattr(state, "net_mask", net_mask)
+    setattr(state, "net_pin_offset_tensor", net_offsets)
+    setattr(state, "net_weight_tensor", net_weights)
+
+
+def soft_boundary_penalty(
+    state: PlacementState,
+    positions: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Soft out-of-bounds penalty for center-coordinate placements."""
+
+    macro_pos = state.positions if positions is None else positions
+    half = state.sizes * 0.5
+    x_low = torch.relu(half[:, 0] - macro_pos[:, 0])
+    x_high = torch.relu(macro_pos[:, 0] + half[:, 0] - float(state.canvas_width))
+    y_low = torch.relu(half[:, 1] - macro_pos[:, 1])
+    y_high = torch.relu(macro_pos[:, 1] + half[:, 1] - float(state.canvas_height))
+    violation = torch.stack((x_low, x_high, y_low, y_high), dim=1)
+    if bool(state.movable_mask.any()):
+        violation = violation[state.movable_mask]
+    return (violation / state.span).pow(2).sum()
 
 
 def boundary_penalty(
