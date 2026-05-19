@@ -74,6 +74,11 @@ def main() -> int:
         f"selected_candidate={getattr(placer, 'selected_candidate', '')} "
         f"valid={valid} violations={';'.join(violations[:4]) if violations else 'none'}"
     )
+    print(
+        "heuristic_search_stats "
+        f"{getattr(placer, 'heuristic_search_log', 'missing')} "
+        f"selected_candidate={getattr(placer, 'selected_candidate', '')}"
+    )
     return 0
 
 
