@@ -164,6 +164,7 @@ class JihoPlacer:
         self.soft_global_congestion_target_scale = 1.25
         self.soft_global_legalized_min_disp = 0.08
         self.use_soft_global_partition_refined = os.environ.get("JIHO_USE_PARTITION_REFINED", "0") == "1"
+        self.use_hotspot_cd = os.environ.get("JIHO_HOTSPOT_CD", "0") == "1"
         self.use_old_meta_fallback = True
         self.use_analytical_global_place = False
         self.use_profile_sweep = False
@@ -225,6 +226,7 @@ class JihoPlacer:
         self.soft_global_dropped_candidates = ""
         self.basin_escape_preselection_log = ""
         self.flow_drag_log = ""
+        self.hotspot_micro_cd_log = ""
         self.random_basin_log = ""
         self.random_basin_preselection_log = ""
         self._candidate_parent_label: Dict[str, str] = {}
@@ -258,6 +260,7 @@ class JihoPlacer:
             f"soft_global_density_target_scale={self.soft_global_density_target_scale}, "
             f"soft_global_soft_disp_weight={self.soft_global_soft_disp_weight}, "
             f"soft_global_congestion_target_scale={self.soft_global_congestion_target_scale}, "
+            f"use_hotspot_cd={self.use_hotspot_cd}, "
             f"use_soft_global_partition_refined={self.use_soft_global_partition_refined}, "
             f"use_old_meta_fallback={self.use_old_meta_fallback}, "
             f"use_analytical_global_place={self.use_analytical_global_place}, "
@@ -450,6 +453,7 @@ class JihoPlacer:
         self.soft_global_dropped_candidates = ""
         self.basin_escape_preselection_log = ""
         self.flow_drag_log = ""
+        self.hotspot_micro_cd_log = ""
         self.random_basin_log = ""
         self.random_basin_preselection_log = ""
         self._profile_params_by_label = {}
@@ -814,6 +818,73 @@ class JihoPlacer:
             placement[fixed_mask] = benchmark.macro_positions[fixed_mask]
         return placement
 
+    def _hotspot_cd_start_candidate(
+        self,
+        candidates: List[Candidate],
+        benchmark: Benchmark,
+    ) -> Tuple[Optional[Candidate], Optional[float], Optional[float], str]:
+        if not candidates:
+            return None, None, None, "hotspot_cd_start=none"
+        cheap_best = min(candidates, key=lambda row: float(row[0]))
+        try:
+            from macro_place.objective import compute_proxy_cost
+        except Exception:
+            return cheap_best, None, None, f"hotspot_cd_start=cheap|label={cheap_best[3]}|reason=no_exact_import"
+
+        plc = _load_plc_for_exact(benchmark.name)
+        if plc is None:
+            return cheap_best, None, None, f"hotspot_cd_start=cheap|label={cheap_best[3]}|reason=no_plc"
+
+        ordered = [cheap_best] + [candidate for candidate in candidates if candidate is not cheap_best]
+        best_candidate = cheap_best
+        best_proxy = float("inf")
+        exact_eval_s: Optional[float] = None
+        exact_count = 0
+        for index, candidate in enumerate(ordered):
+            _surrogate, hard_pos, _force_include, label, full_placement = candidate
+            hard_pos = self._clip_hard_np(hard_pos.copy(), benchmark)
+            if full_placement is not None:
+                placement = full_placement.clone()
+                placement[: benchmark.num_hard_macros] = torch.tensor(hard_pos, dtype=torch.float32)
+                placement = self._repair_hard_bounds_tensor(placement, benchmark)
+                if benchmark.macro_fixed.any():
+                    placement[benchmark.macro_fixed] = benchmark.macro_positions[benchmark.macro_fixed]
+            else:
+                placement = benchmark.macro_positions.clone()
+                placement[: benchmark.num_hard_macros] = torch.tensor(hard_pos, dtype=torch.float32)
+                placement = self._repair_hard_bounds_tensor(placement, benchmark)
+                if benchmark.macro_fixed.any():
+                    placement[benchmark.macro_fixed] = benchmark.macro_positions[benchmark.macro_fixed]
+            try:
+                costs, elapsed = self._compute_proxy_cost_timed(
+                    compute_proxy_cost, placement, benchmark, plc, f"hotspot_cd_start_{label}"
+                )
+            except Exception as exc:
+                if index == 0:
+                    return cheap_best, None, None, (
+                        f"hotspot_cd_start=cheap|label={cheap_best[3]}|reason=exact_failed:{type(exc).__name__}"
+                    )
+                continue
+            exact_count += 1
+            if exact_eval_s is None:
+                exact_eval_s = float(elapsed)
+                if exact_eval_s > 8.0:
+                    return cheap_best, None, exact_eval_s, (
+                        f"hotspot_cd_start=cheap|label={cheap_best[3]}|"
+                        f"exact_eval_s={exact_eval_s:.3f}|reason=slow_exact"
+                    )
+            overlaps = int(costs.get("overlap_count", 999999))
+            proxy = float(costs.get("proxy_cost", float("inf"))) + overlaps * 1.0e6
+            if proxy < best_proxy:
+                best_proxy = proxy
+                best_candidate = candidate
+        if math.isfinite(best_proxy):
+            return best_candidate, best_proxy, exact_eval_s, (
+                f"hotspot_cd_start=exact|label={best_candidate[3]}|proxy={best_proxy:.6f}|"
+                f"exact_eval_s={float(exact_eval_s or float('nan')):.3f}|exact_evals={exact_count}"
+            )
+        return cheap_best, None, exact_eval_s, f"hotspot_cd_start=cheap|label={cheap_best[3]}|reason=no_finite_exact"
+
     def _soft_global_candidates(
         self,
         benchmark: Benchmark,
@@ -1122,6 +1193,41 @@ class JihoPlacer:
             candidates.append(topo_candidate)
             generated_records.append(topo_record)
             legal_logs.append(topo_log)
+        if self.use_hotspot_cd:
+            try:
+                from jiho_place.v1.hotspot_micro_cd import HotspotMicroCDGenerator
+
+                cd_budget = float(os.environ.get("JIHO_CD_TIME", "180"))
+                cd_start, cd_start_proxy, cd_exact_eval_s, cd_start_log = self._hotspot_cd_start_candidate(
+                    candidates, benchmark
+                )
+                cd_generator = HotspotMicroCDGenerator(device=self._soft_global_device(), seed=self.base_seed + 911)
+                hotspot_cd = cd_generator.generate(
+                    engine=self,
+                    candidates=candidates,
+                    benchmark=benchmark,
+                    movable=movable,
+                    sizes=sizes,
+                    half_w=half_w,
+                    half_h=half_h,
+                    cw=cw,
+                    ch=ch,
+                    edges=edges,
+                    time_budget_s=min(180.0, max(1.0, cd_budget)),
+                    start_candidate=cd_start,
+                    start_proxy=cd_start_proxy,
+                    exact_eval_time_s=cd_exact_eval_s,
+                )
+                for cd_candidate, cd_record, cd_log in hotspot_cd:
+                    candidates.append(cd_candidate)
+                    generated_records.append(cd_record)
+                    legal_logs.append(cd_log)
+                self.hotspot_micro_cd_log = ";".join([cd_start_log] + cd_generator.logs)
+            except Exception as exc:
+                self.hotspot_micro_cd_log = f"failed={type(exc).__name__}:{exc}"
+                legal_logs.append(f"hotspot_micro_cd_failed={type(exc).__name__}")
+        else:
+            self.hotspot_micro_cd_log = "disabled"
         self.num_soft_global_candidates_generated = len(candidates)
         candidates, dropped = self._preselect_soft_global_candidates(candidates, generated_records, large_design)
         self.num_soft_global_candidates_kept = len(candidates)
@@ -4016,6 +4122,7 @@ class JihoPlacer:
             or "density_axis" in str(r["label"])
             or "hotspot_refined" in str(r["label"])
             or "congestion_refined" in str(r["label"])
+            or "hotspot_micro_cd" in str(r["label"])
         ]
         corridor_records = [
             r
@@ -6708,6 +6815,8 @@ class JihoPlacer:
             return "congestion_refined"
         if "congestion_flow_drag" in base:
             return "congestion_flow_drag"
+        if "hotspot_micro_cd" in base:
+            return "hotspot_micro_cd"
         if "random_basin_probe" in base:
             return "random_basin_probe"
         if "exact_polished" in base:
@@ -6894,6 +7003,10 @@ class JihoPlacer:
             (c for c in candidates if "soft_global_topo_" in c[3]),
             key=cheap_shortlist_rank,
         )
+        hotspot_cd_pool = sorted(
+            (c for c in candidates if "hotspot_micro_cd" in c[3]),
+            key=cheap_shortlist_rank,
+        )
         regular_soft_pool = [
             c
             for c in candidates
@@ -6922,12 +7035,16 @@ class JihoPlacer:
             add(local)
             add(congestion_refined)
             add(corridor_representative)
+            for cd_candidate in hotspot_cd_pool[:2]:
+                add(cd_candidate)
             for topo_candidate in topology_pool[:6]:
                 add(topo_candidate)
             if not shortlist and candidates:
                 add(candidates[0])
             return self._dedupe_candidates(shortlist[:14], benchmark)
 
+        for cd_candidate in hotspot_cd_pool[:1]:
+            add(cd_candidate)
         add(hotspot_refined)
         add(corridor_representative)
         add(congestion_refined)
