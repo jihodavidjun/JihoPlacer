@@ -741,7 +741,7 @@ class JihoPlacer:
         candidates = self._dedupe_candidates(candidates, benchmark)
         candidates.sort(key=lambda row: row[0])
         cpu_large_smoke = self.execution_mode_used == "local_dev" and self._is_large_soft_global_design(benchmark)
-        if os.environ.get("JIHO_BASIN_ESCAPE_DEDUPE", "1") == "1" and not cpu_large_smoke:
+        if os.environ.get("JIHO_BASIN_ESCAPE_DEDUPE", "0") == "1" and not cpu_large_smoke:
             shortlist = self._basin_escape_exact_preselect(candidates, benchmark, edges)
         elif cpu_large_smoke:
             legal_soft = [c for c in candidates if "soft_global" in c[3] and "_legalized" in c[3]]

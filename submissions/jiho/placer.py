@@ -8,19 +8,43 @@ from jiho_place.v1.current_engine import _load_plc_for_exact
 class JihoPlacer(V1JihoPlacer):
     def place(self, benchmark):
         best_placement = super().place(benchmark)
-        use_v2 = os.environ.get("JIHO_V2_REFINE", "1") == "1"
-        use_v3 = os.environ.get("JIHO_V3_GLOBAL", "1") == "1"
+        use_sa = os.environ.get("JIHO_SA_POLISH", "0") == "1"
+        use_v2 = os.environ.get("JIHO_V2_REFINE", "0") == "1"
+        use_v3 = os.environ.get("JIHO_V3_GLOBAL", "0") == "1"
         plc = None
         compute_proxy_cost = None
-        if use_v2 or use_v3:
+        if use_sa or use_v2 or use_v3:
             try:
                 from macro_place.objective import compute_proxy_cost as _compute_proxy_cost
 
                 compute_proxy_cost = _compute_proxy_cost
                 plc = _load_plc_for_exact(getattr(benchmark, "name", ""))
             except Exception as exc:
-                print(f"[V2/V3] skipped: exact setup unavailable: {exc}")
+                print(f"[SA/V2/V3] skipped: exact setup unavailable: {exc}")
                 plc = None
+
+        if use_sa:
+            if plc is None or compute_proxy_cost is None:
+                print("[SA] skipped: exact PlacementCost unavailable")
+            else:
+                try:
+                    from jiho_place.v1.sa_polish import SAPolisher
+
+                    time_budget = int(os.environ.get("JIHO_SA_TIME", "180"))
+                    polisher = SAPolisher(device="cuda")
+                    sa_placement = polisher.polish(best_placement, benchmark, plc, time_budget_s=time_budget)
+                    sa_cost = compute_proxy_cost(sa_placement, benchmark, plc)
+                    current_cost = compute_proxy_cost(best_placement, benchmark, plc)
+                    sa_proxy = float(sa_cost["proxy_cost"])
+                    current_proxy = float(current_cost["proxy_cost"])
+                    if sa_proxy < current_proxy and int(sa_cost.get("overlap_count", 0)) == 0:
+                        print(f"[SA] improved: {current_proxy:.4f} -> {sa_proxy:.4f}")
+                        best_placement = sa_placement
+                    else:
+                        print(f"[SA] no improvement: {sa_proxy:.4f}")
+                except Exception as exc:
+                    print(f"[SA] failed: {exc}")
+                    traceback.print_exc()
 
         if use_v2:
             if plc is None or compute_proxy_cost is None:

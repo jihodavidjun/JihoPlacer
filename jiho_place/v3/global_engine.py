@@ -167,7 +167,7 @@ class V3GlobalEngine:
         timing["init_s"] += time.time() - t0
 
         param = torch.nn.Parameter(pos.clone())
-        base_lr = 0.8 * chip / float(n_hard)
+        base_lr = 5.0 * chip / float(n_hard)
         optimizer = torch.optim.Adam([param], lr=base_lr)
         stage_times = {1: "stage1_s", 2: "stage2_s", 3: "stage3_s", 4: "stage4_s"}
         stage_start = time.time()
@@ -181,6 +181,8 @@ class V3GlobalEngine:
                 timing[stage_times[last_stage]] += time.time() - stage_start
                 stage_start = time.time()
                 last_stage = stage
+                if stage == 2:
+                    optimizer = torch.optim.Adam([param], lr=base_lr * lr_scale)
             for group in optimizer.param_groups:
                 group["lr"] = base_lr * lr_scale
 
@@ -318,11 +320,64 @@ class V3GlobalEngine:
 
     def _fast_legalize(self, state: _V3State, positions: torch.Tensor) -> torch.Tensor:
         pos = self._clip_and_restore(state, positions.clone())
-        for _ in range(30):
-            delta, max_overlap = self._overlap_repulsion(state, pos, strength=0.55, margin=0.0)
+        for _ in range(100):
+            delta, max_overlap = self._overlap_repulsion(state, pos, strength=1.05, margin=0.0)
             if max_overlap < 1.0e-4:
                 break
             pos = self._clip_and_restore(state, pos + delta)
+        pos = self._greedy_overlap_sweep(state, pos, max_iters=50)
+        return pos
+
+    def _greedy_overlap_sweep(self, state: _V3State, positions: torch.Tensor, max_iters: int) -> torch.Tensor:
+        pos = self._clip_and_restore(state, positions.clone())
+        hard_idx = torch.nonzero(state.hard_mask, as_tuple=False).flatten()
+        n = int(hard_idx.numel())
+        if n <= 1:
+            return pos
+        hard_sizes = state.sizes.index_select(0, hard_idx)
+        canvas = torch.tensor([state.canvas_width, state.canvas_height], dtype=state.dtype, device=state.device)
+
+        for _ in range(max_iters):
+            _delta, max_overlap = self._overlap_repulsion(state, pos, strength=0.0, margin=0.0)
+            if max_overlap < 1.0e-4:
+                break
+
+            moved_any = False
+            order = torch.randperm(n, device=state.device)
+            hard_pos = pos.index_select(0, hard_idx)
+            for local_raw in order.tolist():
+                local = int(local_raw)
+                idx = hard_idx[local]
+                if not bool(state.movable_mask[idx].detach().cpu().item()):
+                    continue
+
+                hard_pos = pos.index_select(0, hard_idx)
+                diff = pos[idx].view(1, 2) - hard_pos
+                sep = (state.sizes[idx].view(1, 2) + hard_sizes) * 0.5
+                overlap = sep - torch.abs(diff)
+                pair = (overlap[:, 0] > 0.0) & (overlap[:, 1] > 0.0)
+                pair[local] = False
+                if not bool(pair.any()):
+                    continue
+
+                candidate_idx = torch.nonzero(pair, as_tuple=False).flatten()
+                depth = torch.minimum(overlap.index_select(0, candidate_idx)[:, 0], overlap.index_select(0, candidate_idx)[:, 1])
+                other_local = int(candidate_idx[int(torch.argmax(depth).detach().cpu().item())].detach().cpu().item())
+                pair_overlap = overlap[other_local]
+                pair_diff = diff[other_local]
+                axis = 0 if bool((pair_overlap[0] <= pair_overlap[1]).detach().cpu().item()) else 1
+                sign = 1.0 if float(pair_diff[axis].detach().cpu().item()) >= 0.0 else -1.0
+                step = (pair_overlap[axis] + torch.tensor(1.0e-4, dtype=state.dtype, device=state.device)) * sign
+                pos[idx, axis] = pos[idx, axis] + step
+                half = state.sizes[idx] * 0.5
+                low = half
+                high = canvas - half
+                pos[idx] = torch.minimum(torch.maximum(pos[idx], torch.minimum(low, high)), torch.maximum(low, high))
+                moved_any = True
+
+            pos = self._clip_and_restore(state, pos)
+            if not moved_any:
+                break
         return pos
 
     def _overlap_repulsion(
