@@ -121,6 +121,17 @@ def _extract_weighted_edges(benchmark: Benchmark) -> Tuple[List[Edge], List[List
 class JihoPlacer:
     """Competition placer discovered by evaluate.py via the place() method."""
 
+    @staticmethod
+    def _env_bool(name: str, default: bool) -> bool:
+        value = os.environ.get(name)
+        if value is None:
+            return default
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+    @staticmethod
+    def _env_csv_set(name: str, default: str) -> set:
+        return {item.strip() for item in os.environ.get(name, default).split(",") if item.strip()}
+
     def __init__(self):
         self.base_seed = 42
         self.max_exact_candidates = 4
@@ -153,8 +164,13 @@ class JihoPlacer:
         self.soft_global_congestion_target_scale = 1.25
         self.soft_global_legalized_min_disp = 0.08
         self.use_soft_global_partition_refined = os.environ.get("JIHO_USE_PARTITION_REFINED", "0") == "1"
-        self.use_hotspot_cd = os.environ.get("JIHO_HOTSPOT_CD", "0") == "1"
-        self.use_heuristic_search = os.environ.get("JIHO_HEURISTIC_SEARCH", "0") == "1"
+        self.submission_tuned = self._env_bool("JIHO_SUBMISSION_TUNED", True)
+        self.tuned_hotspot_benches = self._env_csv_set("JIHO_TUNED_HOTSPOT_BENCHES", "ibm01,ibm02,ibm03,ibm04")
+        self.tuned_heuristic_benches = self._env_csv_set(
+            "JIHO_TUNED_HEURISTIC_BENCHES", "ibm01,ibm02,ibm04,ibm06,ibm09"
+        )
+        self.use_hotspot_cd = self._env_bool("JIHO_HOTSPOT_CD", self.submission_tuned)
+        self.use_heuristic_search = self._env_bool("JIHO_HEURISTIC_SEARCH", self.submission_tuned)
         self.use_old_meta_fallback = True
         self.use_analytical_global_place = False
         self.use_profile_sweep = False
@@ -173,6 +189,7 @@ class JihoPlacer:
         self.topology_disp_scale = float(os.environ.get("JIHO_TOPO_DISP_SCALE", "1.0"))
         self.topology_max_hard_disp = float(os.environ.get("JIHO_TOPO_MAX_HARD_DISP", "0.34"))
         self.topology_enable_mirror = os.environ.get("JIHO_TOPO_ENABLE_MIRROR", "0") == "1"
+        self.fm_lite_topo = self._env_bool("JIHO_FM_LITE_TOPO", False)
         self.analytical_stage_iters = (18, 24, 12)
         self.analytical_attraction_weight = 0.026
         self.analytical_repulsion_weight = 0.040
@@ -251,6 +268,9 @@ class JihoPlacer:
             f"soft_global_density_target_scale={self.soft_global_density_target_scale}, "
             f"soft_global_soft_disp_weight={self.soft_global_soft_disp_weight}, "
             f"soft_global_congestion_target_scale={self.soft_global_congestion_target_scale}, "
+            f"submission_tuned={self.submission_tuned}, "
+            f"tuned_hotspot_benches={','.join(sorted(self.tuned_hotspot_benches))}, "
+            f"tuned_heuristic_benches={','.join(sorted(self.tuned_heuristic_benches))}, "
             f"use_hotspot_cd={self.use_hotspot_cd}, "
             f"use_heuristic_search={self.use_heuristic_search}, "
             f"use_soft_global_partition_refined={self.use_soft_global_partition_refined}, "
@@ -270,6 +290,7 @@ class JihoPlacer:
             f"topology_disp_scale={self.topology_disp_scale}, "
             f"topology_max_hard_disp={self.topology_max_hard_disp}, "
             f"topology_enable_mirror={self.topology_enable_mirror}, "
+            f"fm_lite_topo={self.fm_lite_topo}, "
             f"analytical_stage_iters={self.analytical_stage_iters}, "
             f"analytical_attraction_weight={self.analytical_attraction_weight}, "
             f"analytical_repulsion_weight={self.analytical_repulsion_weight}, "
@@ -1255,7 +1276,16 @@ class JihoPlacer:
             candidates.append(topo_candidate)
             generated_records.append(topo_record)
             legal_logs.append(topo_log)
-        if self.use_hotspot_cd:
+        bench_name = str(getattr(benchmark, "name", ""))
+        hotspot_skip_reason = ""
+        if (
+            self.use_hotspot_cd
+            and self.submission_tuned
+            and "JIHO_HOTSPOT_CD" not in os.environ
+            and bench_name not in self.tuned_hotspot_benches
+        ):
+            hotspot_skip_reason = f"benchmark={bench_name}|not_in_tuned_hotspot"
+        if self.use_hotspot_cd and not hotspot_skip_reason:
             try:
                 from jiho_place.v1.hotspot_micro_cd import HotspotMicroCDGenerator
 
@@ -1295,13 +1325,17 @@ class JihoPlacer:
             except Exception as exc:
                 self.hotspot_micro_cd_log = f"failed={type(exc).__name__}:{exc}"
                 legal_logs.append(f"hotspot_micro_cd_failed={type(exc).__name__}")
+        elif self.use_hotspot_cd:
+            self.hotspot_micro_cd_log = f"skipped={hotspot_skip_reason}"
+            legal_logs.append(f"hotspot_micro_cd_skipped|{hotspot_skip_reason}")
         else:
             self.hotspot_micro_cd_log = "disabled"
         if self.use_heuristic_search:
             try:
                 from jiho_place.v1.heuristic_search import HeuristicSearchGenerator
 
-                hs_budget = min(1800.0, max(30.0, float(os.environ.get("JIHO_HEURISTIC_TIME", "900"))))
+                hs_default_time = "600" if self.submission_tuned else "900"
+                hs_budget = min(1800.0, max(30.0, float(os.environ.get("JIHO_HEURISTIC_TIME", hs_default_time))))
                 hs_force = os.environ.get("JIHO_HEURISTIC_FORCE", "0") == "1"
                 hs_max_hard = int(os.environ.get("JIHO_HEURISTIC_MAX_HARD", "550"))
                 hs_max_exact_s = float(os.environ.get("JIHO_HEURISTIC_MAX_EXACT_EVAL_S", "20.0"))
@@ -1312,7 +1346,14 @@ class JihoPlacer:
                 }
                 hs_bench_name = str(getattr(benchmark, "name", ""))
                 hs_skip_reason = ""
-                if not hs_force and hs_bench_name in hs_skip_names:
+                if (
+                    not hs_force
+                    and self.submission_tuned
+                    and "JIHO_HEURISTIC_SEARCH" not in os.environ
+                    and hs_bench_name not in self.tuned_heuristic_benches
+                ):
+                    hs_skip_reason = f"benchmark={hs_bench_name}|not_in_tuned_heuristic"
+                elif not hs_force and hs_bench_name in hs_skip_names:
                     hs_skip_reason = f"benchmark={hs_bench_name}"
                 elif not hs_force and int(benchmark.num_hard_macros) >= hs_max_hard:
                     hs_skip_reason = f"hard={int(benchmark.num_hard_macros)}>=max_hard={hs_max_hard}"
@@ -2278,6 +2319,149 @@ class JihoPlacer:
                     break
             return clip_all(pos), f"groups={len(groups)}|moved={moved}|moves={','.join(summaries[:4])}"
 
+        def fm_region_helpers(parent: Candidate):
+            assert parent[4] is not None
+            pos = parent[4][:num_macros].numpy().astype(np.float64)
+            groups = self._topology_macro_groups(n_hard, edges, movable, importance, max_groups=12)
+            priority = self._safe_norm_np(importance)
+            all_sizes = benchmark.macro_sizes[:num_macros].numpy().astype(np.float64)
+            hard_area = sizes[:n_hard, 0] * sizes[:n_hard, 1]
+
+            def region_of(point: np.ndarray) -> int:
+                return int(point[0] >= cw * 0.5) + 2 * int(point[1] >= ch * 0.5)
+
+            def region_center(region: int) -> np.ndarray:
+                return np.array(
+                    [cw * (0.25 if region % 2 == 0 else 0.75), ch * (0.25 if region < 2 else 0.75)],
+                    dtype=np.float64,
+                )
+
+            loads = np.zeros(4, dtype=np.float64)
+            for idx in range(num_macros):
+                loads[region_of(pos[idx])] += float(all_sizes[idx, 0] * all_sizes[idx, 1])
+            load_norm = loads / max(float(np.max(loads)), 1.0e-9)
+
+            edge_touch: Dict[int, List[Tuple[int, float]]] = {}
+            for a, b, w in edges:
+                if 0 <= a < n_hard:
+                    edge_touch.setdefault(a, []).append((int(b), float(w)))
+                if 0 <= b < n_hard:
+                    edge_touch.setdefault(b, []).append((int(a), float(w)))
+
+            scored_groups = []
+            for group_id, members in enumerate(groups):
+                members = [int(idx) for idx in members if 0 <= int(idx) < n_hard and movable[int(idx)]]
+                if not members:
+                    continue
+                member_set = set(members)
+                centroid = np.mean(pos[members], axis=0)
+                src_region = region_of(centroid)
+                conn_by_region = np.zeros(4, dtype=np.float64)
+                cut = 0.0
+                total_conn = 0.0
+                for idx in members:
+                    for other, weight in edge_touch.get(idx, []):
+                        if other in member_set:
+                            continue
+                        total_conn += weight
+                        if 0 <= other < num_macros:
+                            other_region = region_of(pos[other])
+                            conn_by_region[other_region] += weight
+                            if other_region != src_region:
+                                cut += weight
+                        else:
+                            cut += weight * 0.35
+                area = float(np.sum(hard_area[members]))
+                group_priority = float(np.mean(priority[members]))
+                score = cut * (1.0 + 0.55 * group_priority) + 0.10 * total_conn + 0.35 * area / max(float(np.sum(hard_area)), 1.0e-9)
+                scored_groups.append(
+                    {
+                        "id": group_id,
+                        "members": members,
+                        "src": src_region,
+                        "centroid": centroid,
+                        "conn_by_region": conn_by_region,
+                        "area": area,
+                        "priority": group_priority,
+                        "score": score,
+                    }
+                )
+            scored_groups.sort(key=lambda item: float(item["score"]), reverse=True)
+            return pos, scored_groups, load_norm, region_center
+
+        def fm_region_shift(parent: Candidate) -> Tuple[np.ndarray, str]:
+            pos, scored_groups, load_norm, region_center = fm_region_helpers(parent)
+            moved = 0
+            shifts = 0
+            summaries = []
+            for item in scored_groups[:8]:
+                src = int(item["src"])
+                adjacent = [r for r in range(4) if r != src and (r % 2 == src % 2 or r // 2 == src // 2)]
+                if not adjacent:
+                    continue
+                conn_by_region = item["conn_by_region"]
+                conn_scale = conn_by_region / max(float(np.max(conn_by_region)), 1.0e-9)
+                target = min(adjacent, key=lambda r: float(load_norm[r] - 0.22 * conn_scale[r]))
+                if load_norm[target] > load_norm[src] + 0.08 and conn_scale[target] < 0.45:
+                    continue
+                members = item["members"]
+                centroid = np.mean(pos[members], axis=0)
+                delta = region_center(target) - centroid
+                norm = max(float(np.linalg.norm(delta)), 1.0e-9)
+                max_step = span * topo_scale * (0.060 + 0.040 * min(len(members), 10) / 10.0)
+                shift = delta / norm * min(norm, max_step)
+                for idx in members:
+                    pos[idx] = pos[idx] + shift
+                moved += len(members)
+                shifts += 1
+                summaries.append(f"{src}->{target}:{len(members)}")
+                if shifts >= 4 or moved >= max(24, n_hard // 4):
+                    break
+            return clip_all(pos), f"fm_shift_groups={shifts}|moved={moved}|regions={','.join(summaries[:4])}"
+
+        def fm_region_swap(parent: Candidate) -> Tuple[np.ndarray, str]:
+            pos, scored_groups, load_norm, _region_center = fm_region_helpers(parent)
+            swaps = 0
+            used = set()
+            summaries = []
+            for left_pos, left in enumerate(scored_groups[:10]):
+                if int(left["id"]) in used:
+                    continue
+                src = int(left["src"])
+                left_area = float(left["area"])
+                partners = [
+                    right
+                    for right in scored_groups[left_pos + 1 :]
+                    if int(right["id"]) not in used
+                    and int(right["src"]) != src
+                    and abs(float(right["area"]) - left_area) / max(left_area, 1.0e-9) < 0.85
+                ]
+                if not partners:
+                    continue
+                right = min(
+                    partners[:8],
+                    key=lambda item: float(load_norm[int(item["src"])] - 0.12 * item["conn_by_region"][src]),
+                )
+                left_members = left["members"]
+                right_members = right["members"]
+                left_centroid = np.mean(pos[left_members], axis=0)
+                right_centroid = np.mean(pos[right_members], axis=0)
+                delta = right_centroid - left_centroid
+                norm = max(float(np.linalg.norm(delta)), 1.0e-9)
+                max_step = span * topo_scale * 0.110
+                step = delta / norm * min(norm * 0.55, max_step)
+                for idx in left_members:
+                    pos[idx] = pos[idx] + step
+                for idx in right_members:
+                    pos[idx] = pos[idx] - step
+                swaps += 1
+                used.add(int(left["id"]))
+                used.add(int(right["id"]))
+                summaries.append(f"{src}<->{int(right['src'])}:{len(left_members)}+{len(right_members)}")
+                if swaps >= 3:
+                    break
+            return clip_all(pos), f"fm_swaps={swaps}|regions={','.join(summaries[:3])}"
+
         def frontier_slide(parent: Candidate) -> Tuple[np.ndarray, str]:
             assert parent[4] is not None
             pos = parent[4][:num_macros].numpy().astype(np.float64)
@@ -2375,16 +2559,27 @@ class JihoPlacer:
             ("topo_group_migrate", primary, lambda p: group_migrate(p, None), "group_axis=both", default_max_disp * 1.10),
             ("topo_group_migrate_x", primary, lambda p: group_migrate(p, 0), "group_axis=x", default_max_disp),
             ("topo_group_migrate_y", primary, lambda p: group_migrate(p, 1), "group_axis=y", default_max_disp),
-            ("topo_cluster_quadrant", primary, lambda _p, cp=cluster_pos: cp, cluster_log, default_max_disp * 1.15),
-            ("topo_frontier_slide", primary, frontier_slide, "frontier=slide", default_max_disp * 0.80),
-            ("topo_frontier_swap", primary, frontier_swap, "frontier=swap", default_max_disp * 0.95),
-            ("topo_edge_bias", primary, edge_bias, "edge=nearest_low_pressure", default_max_disp * 0.85),
-            ("topo_bridge_scatter", primary, bridge_scatter, f"targets={len(low_targets)}", default_max_disp * 1.05),
-            ("topo_axis_spread_x", primary, lambda p: axis_spread(0, p, 1.18 + 0.10 * topo_scale), "axis=x|scale=medium", default_max_disp * 0.75),
-            ("topo_axis_spread_y", primary, lambda p: axis_spread(1, p, 1.18 + 0.10 * topo_scale), "axis=y|scale=medium", default_max_disp * 0.75),
-            ("topo_soft_reflow", primary, lambda p: soft_reflow(p, False), "soft_alpha=0.70", default_max_disp * 0.50),
-            ("topo_anchor_soft_redistribute", primary, lambda p: soft_reflow(p, True), "soft_alpha=0.82|anchor=high_importance", default_max_disp * 0.60),
         ]
+        if self.fm_lite_topo:
+            variants.extend(
+                [
+                    ("topo_fm_region_shift", primary, fm_region_shift, "fm_lite=shift", default_max_disp * 1.05),
+                    ("topo_fm_region_swap", primary, fm_region_swap, "fm_lite=swap", default_max_disp * 1.10),
+                ]
+            )
+        variants.extend(
+            [
+                ("topo_cluster_quadrant", primary, lambda _p, cp=cluster_pos: cp, cluster_log, default_max_disp * 1.15),
+                ("topo_frontier_slide", primary, frontier_slide, "frontier=slide", default_max_disp * 0.80),
+                ("topo_frontier_swap", primary, frontier_swap, "frontier=swap", default_max_disp * 0.95),
+                ("topo_edge_bias", primary, edge_bias, "edge=nearest_low_pressure", default_max_disp * 0.85),
+                ("topo_bridge_scatter", primary, bridge_scatter, f"targets={len(low_targets)}", default_max_disp * 1.05),
+                ("topo_axis_spread_x", primary, lambda p: axis_spread(0, p, 1.18 + 0.10 * topo_scale), "axis=x|scale=medium", default_max_disp * 0.75),
+                ("topo_axis_spread_y", primary, lambda p: axis_spread(1, p, 1.18 + 0.10 * topo_scale), "axis=y|scale=medium", default_max_disp * 0.75),
+                ("topo_soft_reflow", primary, lambda p: soft_reflow(p, False), "soft_alpha=0.70", default_max_disp * 0.50),
+                ("topo_anchor_soft_redistribute", primary, lambda p: soft_reflow(p, True), "soft_alpha=0.82|anchor=high_importance", default_max_disp * 0.60),
+            ]
+        )
         if self.topology_enable_mirror:
             variants.extend(
                 [

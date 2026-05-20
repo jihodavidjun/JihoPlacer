@@ -35,7 +35,9 @@ NG45_BENCHMARKS = {
 
 def main() -> int:
     benchmark_name = os.environ.get("JIHO_CD_SMOKE_BENCH", "ibm01")
-    os.environ.setdefault("JIHO_HOTSPOT_CD", "1")
+    tuned_default = os.environ.get("JIHO_SUBMISSION_TUNED", "1").strip().lower() not in {"", "0", "false", "no", "off"}
+    if not tuned_default:
+        os.environ.setdefault("JIHO_HOTSPOT_CD", "1")
     os.environ.setdefault("JIHO_CD_TIME", "60")
 
     benchmark, plc, load_message = load_smoke_benchmark(benchmark_name)
