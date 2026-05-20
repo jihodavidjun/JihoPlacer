@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual smoke test for JihoPlace v3 global placement."""
+"""Manual smoke test for PinePlace v3 global placement."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ for path in (REPO_ROOT, CHALLENGE_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from jiho_place.v3.global_engine import V3GlobalEngine
+from pine_place.v3.global_engine import V3GlobalEngine
 from macro_place.benchmark import Benchmark
 from macro_place.loader import load_benchmark, load_benchmark_from_dir
 from macro_place.objective import compute_proxy_cost
@@ -34,13 +34,13 @@ NG45_BENCHMARKS = {
 
 
 def main() -> int:
-    benchmark_name = os.environ.get("JIHO_V3_SMOKE_BENCH", "ibm01")
-    iterations = int(os.environ.get("JIHO_V3_ITERS", "1200"))
-    starts = int(os.environ.get("JIHO_V3_NUM_STARTS", "3"))
-    max_time = float(os.environ.get("JIHO_V3_MAX_TIME_SECONDS", "300"))
+    benchmark_name = os.environ.get("PINE_V3_SMOKE_BENCH", "ibm01")
+    iterations = int(os.environ.get("PINE_V3_ITERS", "1200"))
+    starts = int(os.environ.get("PINE_V3_NUM_STARTS", "3"))
+    max_time = float(os.environ.get("PINE_V3_MAX_TIME_SECONDS", "300"))
 
     benchmark, plc, load_message = load_smoke_benchmark(benchmark_name)
-    print("JihoPlace v3 global smoke")
+    print("PinePlace v3 global smoke")
     print(f"repo_root={REPO_ROOT}")
     print(load_message)
     print(

@@ -1,4 +1,4 @@
-"""Area-overlap bin density objective for JihoPlace v2."""
+"""Area-overlap bin density objective for PinePlace v2."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple, Union
 
 import torch
 
-from jiho_place.v2.placement_state import PlacementState
+from pine_place.v2.placement_state import PlacementState
 
 
 GridSize = Union[int, Tuple[int, int]]

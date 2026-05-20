@@ -22,7 +22,7 @@ from macro_place.benchmark import Benchmark
 from macro_place.loader import load_benchmark, load_benchmark_from_dir
 from macro_place.objective import compute_proxy_cost
 from macro_place.utils import validate_placement
-from submissions.jiho.placer import JihoPlacer
+from submissions.pineplace.placer import PinePlace
 
 
 NG45_BENCHMARKS = {
@@ -34,14 +34,14 @@ NG45_BENCHMARKS = {
 
 
 def main() -> int:
-    benchmark_name = os.environ.get("JIHO_CD_SMOKE_BENCH", "ibm01")
-    tuned_default = os.environ.get("JIHO_SUBMISSION_TUNED", "1").strip().lower() not in {"", "0", "false", "no", "off"}
+    benchmark_name = os.environ.get("PINE_CD_SMOKE_BENCH", "ibm01")
+    tuned_default = os.environ.get("PINE_SUBMISSION_TUNED", "1").strip().lower() not in {"", "0", "false", "no", "off"}
     if not tuned_default:
-        os.environ.setdefault("JIHO_HOTSPOT_CD", "1")
-    os.environ.setdefault("JIHO_CD_TIME", "60")
+        os.environ.setdefault("PINE_HOTSPOT_CD", "1")
+    os.environ.setdefault("PINE_CD_TIME", "60")
 
     benchmark, plc, load_message = load_smoke_benchmark(benchmark_name)
-    print("JihoPlace hotspot micro-CD smoke")
+    print("PinePlace hotspot micro-CD smoke")
     print(f"repo_root={REPO_ROOT}")
     print(load_message)
     print(
@@ -51,12 +51,12 @@ def main() -> int:
         f"canvas={float(benchmark.canvas_width):.3f}x{float(benchmark.canvas_height):.3f}"
     )
 
-    saved_env = {key: os.environ.get(key) for key in ("JIHO_SA_POLISH", "JIHO_V2_REFINE", "JIHO_V3_GLOBAL")}
-    os.environ["JIHO_SA_POLISH"] = "0"
-    os.environ["JIHO_V2_REFINE"] = "0"
-    os.environ["JIHO_V3_GLOBAL"] = "0"
+    saved_env = {key: os.environ.get(key) for key in ("PINE_SA_POLISH", "PINE_V2_REFINE", "PINE_V3_GLOBAL")}
+    os.environ["PINE_SA_POLISH"] = "0"
+    os.environ["PINE_V2_REFINE"] = "0"
+    os.environ["PINE_V3_GLOBAL"] = "0"
     try:
-        placer = JihoPlacer()
+        placer = PinePlace()
         start = time.time()
         placement = placer.place(benchmark)
         elapsed = time.time() - start

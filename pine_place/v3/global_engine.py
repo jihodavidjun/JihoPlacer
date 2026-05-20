@@ -1,4 +1,4 @@
-"""Global analytical macro placement engine for JihoPlace v3."""
+"""Global analytical macro placement engine for PinePlace v3."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 
-from jiho_place.v2.objectives import smooth_hpwl_lse
+from pine_place.v2.objectives import smooth_hpwl_lse
 
 
 DeviceLike = Optional[Union[str, torch.device]]

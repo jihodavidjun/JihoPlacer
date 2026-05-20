@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from jiho_place.v1.hotspot_micro_cd import Candidate, HotspotMicroCDGenerator
+from pine_place.v1.hotspot_micro_cd import Candidate, HotspotMicroCDGenerator
 
 
 class HeuristicSearchGenerator(HotspotMicroCDGenerator):
@@ -36,13 +36,13 @@ class HeuristicSearchGenerator(HotspotMicroCDGenerator):
         exact_eval_time_s: Optional[float] = None,
     ) -> List[Tuple[Candidate, Dict[str, object], str]]:
         start = time.time()
-        budget = min(max(30.0, float(time_budget_s)), float(os.environ.get("JIHO_HEURISTIC_MAX_TIME", "3300")))
+        budget = min(max(30.0, float(time_budget_s)), float(os.environ.get("PINE_HEURISTIC_MAX_TIME", "3300")))
         self.logs = []
         self.hotspot_ids = []
         self.stats.exact_evals = 0
         self.stats.cheap_evals = 0
         self._heuristic_exact_cap = 0
-        self._stage_log_every_s = max(10.0, float(os.environ.get("JIHO_HEURISTIC_STAGE_LOG_EVERY", "30")))
+        self._stage_log_every_s = max(10.0, float(os.environ.get("PINE_HEURISTIC_STAGE_LOG_EVERY", "30")))
         if not candidates or int(getattr(benchmark, "num_hard_macros", 0)) <= 0:
             self.logs.append("heuristic_search=skipped|reason=no_candidates")
             return []
@@ -75,15 +75,15 @@ class HeuristicSearchGenerator(HotspotMicroCDGenerator):
         if exact_fast:
             self._heuristic_exact_cap = max(
                 8,
-                int(os.environ.get("JIHO_HEURISTIC_EXACT_CAP", str(max(20, min(140, int(0.28 * budget / max(self.stats.exact_eval_time_s, 1.0e-6))))))),
+                int(os.environ.get("PINE_HEURISTIC_EXACT_CAP", str(max(20, min(140, int(0.28 * budget / max(self.stats.exact_eval_time_s, 1.0e-6))))))),
             )
         elif exact_affordable:
             self._heuristic_exact_cap = max(
                 2,
-                int(os.environ.get("JIHO_HEURISTIC_EXACT_CAP", str(max(2, min(24, int(0.08 * budget / max(self.stats.exact_eval_time_s, 1.0e-6))))))),
+                int(os.environ.get("PINE_HEURISTIC_EXACT_CAP", str(max(2, min(24, int(0.08 * budget / max(self.stats.exact_eval_time_s, 1.0e-6))))))),
             )
         else:
-            self._heuristic_exact_cap = max(0, int(os.environ.get("JIHO_HEURISTIC_EXACT_CAP", "0")))
+            self._heuristic_exact_cap = max(0, int(os.environ.get("PINE_HEURISTIC_EXACT_CAP", "0")))
 
         net_data = self._net_data_for(benchmark, plc, base_full.shape[0])
         hard = base_full[:n_hard].detach().cpu().numpy().astype(np.float64)
@@ -101,8 +101,8 @@ class HeuristicSearchGenerator(HotspotMicroCDGenerator):
         outputs: List[Tuple[Candidate, Dict[str, object], str]] = []
         best = state
         best_hard = hard.copy()
-        exact_per_macro = max(1, int(os.environ.get("JIHO_HEURISTIC_EXACT_PER_MACRO", "6")))
-        cd_patience = max(8, int(os.environ.get("JIHO_HEURISTIC_CD_PATIENCE_MACROS", "64")))
+        exact_per_macro = max(1, int(os.environ.get("PINE_HEURISTIC_EXACT_PER_MACRO", "6")))
+        cd_patience = max(8, int(os.environ.get("PINE_HEURISTIC_CD_PATIENCE_MACROS", "64")))
         stage_budgets = self._stage_budgets(budget, exact_fast, exact_affordable, n_hard)
         print(
             "[heuristic_search] "
@@ -362,7 +362,7 @@ class HeuristicSearchGenerator(HotspotMicroCDGenerator):
     ):
         span = math.sqrt(max(cw * ch, 1.0e-12))
         n_hard = int(benchmark.num_hard_macros)
-        tabu_ttl = max(4, int(os.environ.get("JIHO_HEURISTIC_TABU_TTL", "18")))
+        tabu_ttl = max(4, int(os.environ.get("PINE_HEURISTIC_TABU_TTL", "18")))
         tabu: Dict[Tuple[int, int, int], int] = {}
         no_improve = 0
         last_log = time.time()

@@ -1,4 +1,4 @@
-"""Hard-macro legalization for JihoPlace v2 candidate placements."""
+"""Hard-macro legalization for PinePlace v2 candidate placements."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 import torch
 
-from jiho_place.v2.placement_state import PlacementState
+from pine_place.v2.placement_state import PlacementState
 
 
 def legalize_placement(

@@ -20,12 +20,12 @@ for path in (REPO_ROOT, CHALLENGE_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from jiho_place.v2.refined_engine import V2RefinedEngine
+from pine_place.v2.refined_engine import V2RefinedEngine
 from macro_place.benchmark import Benchmark
 from macro_place.loader import load_benchmark, load_benchmark_from_dir
 from macro_place.objective import compute_proxy_cost
 from macro_place.utils import validate_placement, visualize_placement
-from submissions.jiho.placer import JihoPlacer
+from submissions.pineplace.placer import PinePlace
 
 
 NG45_BENCHMARKS = {
@@ -37,14 +37,14 @@ NG45_BENCHMARKS = {
 
 
 def main() -> int:
-    benchmark_name = os.environ.get("JIHO_V2_REFINE_SMOKE_BENCH", "ibm01")
-    iters = int(os.environ.get("JIHO_V2_REFINE_ITERS", "1200"))
-    log_every = int(os.environ.get("JIHO_V2_REFINE_LOG_EVERY", "50"))
-    max_nets_raw = os.environ.get("JIHO_V2_REFINE_MAX_NETS", "")
+    benchmark_name = os.environ.get("PINE_V2_REFINE_SMOKE_BENCH", "ibm01")
+    iters = int(os.environ.get("PINE_V2_REFINE_ITERS", "1200"))
+    log_every = int(os.environ.get("PINE_V2_REFINE_LOG_EVERY", "50"))
+    max_nets_raw = os.environ.get("PINE_V2_REFINE_MAX_NETS", "")
     max_nets = int(max_nets_raw) if max_nets_raw.strip() else None
 
     benchmark, plc, load_message = load_smoke_benchmark(benchmark_name)
-    print("JihoPlace v2 refined smoke")
+    print("PinePlace v2 refined smoke")
     print(f"repo_root={REPO_ROOT}")
     print(load_message)
     print(
@@ -54,17 +54,17 @@ def main() -> int:
         f"canvas={float(benchmark.canvas_width):.3f}x{float(benchmark.canvas_height):.3f}"
     )
 
-    old_refine = os.environ.get("JIHO_V2_REFINE")
-    os.environ["JIHO_V2_REFINE"] = "0"
+    old_refine = os.environ.get("PINE_V2_REFINE")
+    os.environ["PINE_V2_REFINE"] = "0"
     try:
         start = time.time()
-        v1_placement = JihoPlacer().place(benchmark)
+        v1_placement = PinePlace().place(benchmark)
         v1_elapsed = time.time() - start
     finally:
         if old_refine is None:
-            os.environ.pop("JIHO_V2_REFINE", None)
+            os.environ.pop("PINE_V2_REFINE", None)
         else:
-            os.environ["JIHO_V2_REFINE"] = old_refine
+            os.environ["PINE_V2_REFINE"] = old_refine
 
     v1_cost = compute_proxy_cost(v1_placement, benchmark, plc)
     print_cost("v1", v1_cost, v1_elapsed)

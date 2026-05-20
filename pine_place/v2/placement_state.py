@@ -1,4 +1,4 @@
-"""Tensor state for JihoPlace v2 analytical placement."""
+"""Tensor state for PinePlace v2 analytical placement."""
 
 from __future__ import annotations
 

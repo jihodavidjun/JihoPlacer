@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tiny smoke runner for JihoPlace v2 analytical placement."""
+"""Tiny smoke runner for PinePlace v2 analytical placement."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ if str(REPO_ROOT) not in sys.path:
 if str(CHALLENGE_ROOT) not in sys.path:
     sys.path.insert(0, str(CHALLENGE_ROOT))
 
-from jiho_place.v2.analytical_engine import AnalyticalPlacementEngine, make_v2_config
-from jiho_place.v2.optimizer import ObjectiveWeights, StageConfig
+from pine_place.v2.analytical_engine import AnalyticalPlacementEngine, make_v2_config
+from pine_place.v2.optimizer import ObjectiveWeights, StageConfig
 from macro_place.benchmark import Benchmark
 from macro_place.loader import load_benchmark, load_benchmark_from_dir
 
@@ -41,7 +41,7 @@ def main() -> int:
     requested_device = normalize_device(args.device)
     active_device = resolve_active_device(requested_device)
 
-    print("JihoPlace v2 smoke")
+    print("PinePlace v2 smoke")
     print(f"repo_root={REPO_ROOT}")
     print(f"challenge_root={CHALLENGE_ROOT}")
     print(f"benchmark={args.benchmark} preset={args.preset} iters={args.iters}")
@@ -130,7 +130,7 @@ def main() -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a tiny JihoPlace v2 smoke test.")
+    parser = argparse.ArgumentParser(description="Run a tiny PinePlace v2 smoke test.")
     parser.add_argument("--benchmark", default="ibm01", help="Benchmark name or benchmark directory path.")
     parser.add_argument("--preset", default="balanced", help="v2 preset name.")
     parser.add_argument("--iters", type=int, default=20, help="Override total v2 iterations.")

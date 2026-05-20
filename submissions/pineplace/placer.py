@@ -1,16 +1,16 @@
 import os
 import traceback
 
-from jiho_place.v1.current_engine import JihoPlacer as V1JihoPlacer
-from jiho_place.v1.current_engine import _load_plc_for_exact
+from pine_place.v1.current_engine import PinePlace as V1PinePlace
+from pine_place.v1.current_engine import _load_plc_for_exact
 
 
-class JihoPlacer(V1JihoPlacer):
+class PinePlace(V1PinePlace):
     def place(self, benchmark):
         best_placement = super().place(benchmark)
-        use_sa = os.environ.get("JIHO_SA_POLISH", "0") == "1"
-        use_v2 = os.environ.get("JIHO_V2_REFINE", "0") == "1"
-        use_v3 = os.environ.get("JIHO_V3_GLOBAL", "0") == "1"
+        use_sa = os.environ.get("PINE_SA_POLISH", "0") == "1"
+        use_v2 = os.environ.get("PINE_V2_REFINE", "0") == "1"
+        use_v3 = os.environ.get("PINE_V3_GLOBAL", "0") == "1"
         plc = None
         compute_proxy_cost = None
         if use_sa or use_v2 or use_v3:
@@ -28,9 +28,9 @@ class JihoPlacer(V1JihoPlacer):
                 print("[SA] skipped: exact PlacementCost unavailable")
             else:
                 try:
-                    from jiho_place.v1.sa_polish import SAPolisher
+                    from pine_place.v1.sa_polish import SAPolisher
 
-                    time_budget = int(os.environ.get("JIHO_SA_TIME", "180"))
+                    time_budget = int(os.environ.get("PINE_SA_TIME", "180"))
                     polisher = SAPolisher(device="cuda")
                     sa_placement = polisher.polish(best_placement, benchmark, plc, time_budget_s=time_budget)
                     sa_cost = compute_proxy_cost(sa_placement, benchmark, plc)
@@ -51,11 +51,11 @@ class JihoPlacer(V1JihoPlacer):
                 print("[V2] skipped: exact PlacementCost unavailable")
             else:
                 try:
-                    from jiho_place.v2.refined_engine import V2RefinedEngine
+                    from pine_place.v2.refined_engine import V2RefinedEngine
 
-                    iters = int(os.environ.get("JIHO_V2_REFINE_ITERS", "1200"))
-                    log_every = int(os.environ.get("JIHO_V2_REFINE_LOG_EVERY", "50"))
-                    max_nets_raw = os.environ.get("JIHO_V2_REFINE_MAX_NETS", "")
+                    iters = int(os.environ.get("PINE_V2_REFINE_ITERS", "1200"))
+                    log_every = int(os.environ.get("PINE_V2_REFINE_LOG_EVERY", "50"))
+                    max_nets_raw = os.environ.get("PINE_V2_REFINE_MAX_NETS", "")
                     max_nets = int(max_nets_raw) if max_nets_raw.strip() else None
                     engine = V2RefinedEngine(iterations=iters, log_every=log_every, max_nets=max_nets)
                     refined = engine.refine(best_placement, benchmark, plc)
@@ -76,11 +76,11 @@ class JihoPlacer(V1JihoPlacer):
                 print("[V3] skipped: exact PlacementCost unavailable")
             else:
                 try:
-                    from jiho_place.v3.global_engine import V3GlobalEngine
+                    from pine_place.v3.global_engine import V3GlobalEngine
 
-                    max_time = float(os.environ.get("JIHO_V3_MAX_TIME_SECONDS", "300"))
-                    starts = int(os.environ.get("JIHO_V3_NUM_STARTS", "3"))
-                    iters = int(os.environ.get("JIHO_V3_ITERS", "1200"))
+                    max_time = float(os.environ.get("PINE_V3_MAX_TIME_SECONDS", "300"))
+                    starts = int(os.environ.get("PINE_V3_NUM_STARTS", "3"))
+                    iters = int(os.environ.get("PINE_V3_ITERS", "1200"))
                     engine = V3GlobalEngine(device="cuda", max_time_seconds=max_time, num_starts=starts, iterations=iters)
                     v3_placement = engine.place(benchmark, plc)
                     v3_cost = compute_proxy_cost(v3_placement, benchmark, plc)

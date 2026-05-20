@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from jiho_place.v1.sa_polish import SAPolisher, _SANetData
+from pine_place.v1.sa_polish import SAPolisher, _SANetData
 
 
 Candidate = Tuple[float, np.ndarray, bool, str, Optional[torch.Tensor]]
@@ -65,7 +65,7 @@ class HotspotMicroCDGenerator:
         self.logs = []
         self.hotspot_ids = []
         budget = max(1.0, float(time_budget_s))
-        exact_per_macro = max(1, int(os.environ.get("JIHO_HOTSPOT_CD_EXACT_PER_MACRO", "2")))
+        exact_per_macro = max(1, int(os.environ.get("PINE_HOTSPOT_CD_EXACT_PER_MACRO", "2")))
         if not candidates or int(getattr(benchmark, "num_hard_macros", 0)) <= 0:
             self.logs.append("skipped=no_candidates")
             return []
@@ -647,7 +647,7 @@ class HotspotMicroCDGenerator:
     def _load_exact_tools(self, benchmark: Any) -> Tuple[Any, Any]:
         try:
             from macro_place.objective import compute_proxy_cost
-            from jiho_place.v1.current_engine import _load_plc_for_exact
+            from pine_place.v1.current_engine import _load_plc_for_exact
 
             return _load_plc_for_exact(str(getattr(benchmark, "name", ""))), compute_proxy_cost
         except Exception:

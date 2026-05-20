@@ -9,11 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
-from jiho_place.v2.congestion import differentiable_routing_congestion
-from jiho_place.v2.density import gaussian_density_penalty
-from jiho_place.v2.legalization import legalize_placement
-from jiho_place.v2.objectives import default_lse_gamma, smooth_hpwl_lse, soft_boundary_penalty
-from jiho_place.v2.placement_state import PlacementState
+from pine_place.v2.congestion import differentiable_routing_congestion
+from pine_place.v2.density import gaussian_density_penalty
+from pine_place.v2.legalization import legalize_placement
+from pine_place.v2.objectives import default_lse_gamma, smooth_hpwl_lse, soft_boundary_penalty
+from pine_place.v2.placement_state import PlacementState
 
 
 DeviceLike = Optional[Union[str, torch.device]]

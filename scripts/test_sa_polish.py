@@ -18,12 +18,12 @@ for path in (REPO_ROOT, CHALLENGE_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from jiho_place.v1.sa_polish import SAPolisher
+from pine_place.v1.sa_polish import SAPolisher
 from macro_place.benchmark import Benchmark
 from macro_place.loader import load_benchmark, load_benchmark_from_dir
 from macro_place.objective import compute_proxy_cost
 from macro_place.utils import validate_placement, visualize_placement
-from submissions.jiho.placer import JihoPlacer
+from submissions.pineplace.placer import PinePlace
 
 
 NG45_BENCHMARKS = {
@@ -35,11 +35,11 @@ NG45_BENCHMARKS = {
 
 
 def main() -> int:
-    benchmark_name = os.environ.get("JIHO_SA_SMOKE_BENCH", "ibm01")
-    time_budget = int(os.environ.get("JIHO_SA_TIME", "60"))
+    benchmark_name = os.environ.get("PINE_SA_SMOKE_BENCH", "ibm01")
+    time_budget = int(os.environ.get("PINE_SA_TIME", "60"))
 
     benchmark, plc, load_message = load_smoke_benchmark(benchmark_name)
-    print("JihoPlace SA polish smoke")
+    print("PinePlace SA polish smoke")
     print(f"repo_root={REPO_ROOT}")
     print(load_message)
     print(
@@ -49,13 +49,13 @@ def main() -> int:
         f"canvas={float(benchmark.canvas_width):.3f}x{float(benchmark.canvas_height):.3f}"
     )
 
-    saved_env = {key: os.environ.get(key) for key in ("JIHO_SA_POLISH", "JIHO_V2_REFINE", "JIHO_V3_GLOBAL")}
-    os.environ["JIHO_SA_POLISH"] = "0"
-    os.environ["JIHO_V2_REFINE"] = "0"
-    os.environ["JIHO_V3_GLOBAL"] = "0"
+    saved_env = {key: os.environ.get(key) for key in ("PINE_SA_POLISH", "PINE_V2_REFINE", "PINE_V3_GLOBAL")}
+    os.environ["PINE_SA_POLISH"] = "0"
+    os.environ["PINE_V2_REFINE"] = "0"
+    os.environ["PINE_V3_GLOBAL"] = "0"
     try:
         start = time.time()
-        initial = JihoPlacer().place(benchmark)
+        initial = PinePlace().place(benchmark)
         v1_elapsed = time.time() - start
     finally:
         for key, value in saved_env.items():
@@ -67,7 +67,7 @@ def main() -> int:
     initial_cost = compute_proxy_cost(initial, benchmark, plc)
     print_cost("initial", initial_cost, v1_elapsed)
 
-    polisher = SAPolisher(device=os.environ.get("JIHO_SA_DEVICE", "cuda"))
+    polisher = SAPolisher(device=os.environ.get("PINE_SA_DEVICE", "cuda"))
     start = time.time()
     polished = polisher.polish(initial, benchmark, plc, time_budget_s=time_budget)
     polish_elapsed = time.time() - start

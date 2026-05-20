@@ -1,4 +1,4 @@
-"""Nesterov optimization loop for JihoPlace v2."""
+"""Nesterov optimization loop for PinePlace v2."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
-from jiho_place.v2.congestion import route_demand_overflow
-from jiho_place.v2.density import GridSize, density_overflow
-from jiho_place.v2.objectives import boundary_penalty, hard_macro_overlap_penalty, smooth_hpwl
-from jiho_place.v2.placement_state import PlacementState
+from pine_place.v2.congestion import route_demand_overflow
+from pine_place.v2.density import GridSize, density_overflow
+from pine_place.v2.objectives import boundary_penalty, hard_macro_overlap_penalty, smooth_hpwl
+from pine_place.v2.placement_state import PlacementState
 
 
 @dataclass(frozen=True)

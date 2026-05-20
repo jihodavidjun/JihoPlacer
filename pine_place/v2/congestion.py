@@ -1,4 +1,4 @@
-"""Coarse route-demand congestion objective for JihoPlace v2."""
+"""Coarse route-demand congestion objective for PinePlace v2."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from jiho_place.v2.density import GridSize, bin_edges, macro_bin_utilization, normalize_grid_size
-from jiho_place.v2.objectives import default_lse_gamma
-from jiho_place.v2.placement_state import PlacementState
+from pine_place.v2.density import GridSize, bin_edges, macro_bin_utilization, normalize_grid_size
+from pine_place.v2.objectives import default_lse_gamma
+from pine_place.v2.placement_state import PlacementState
 
 
 def route_demand_overflow(

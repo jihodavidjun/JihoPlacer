@@ -1,4 +1,4 @@
-"""Public JihoPlace v2 analytical placement engine."""
+"""Public PinePlace v2 analytical placement engine."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 import torch
 
-from jiho_place.v2.congestion import route_demand_overflow
-from jiho_place.v2.density import density_overflow
-from jiho_place.v2.legalization import legalize_placement
-from jiho_place.v2.objectives import boundary_penalty, hard_macro_overlap_penalty, smooth_hpwl
-from jiho_place.v2.optimizer import ObjectiveWeights, OptimizerConfig, StageConfig, default_stage_schedule, optimize_placement
-from jiho_place.v2.placement_state import PlacementState
+from pine_place.v2.congestion import route_demand_overflow
+from pine_place.v2.density import density_overflow
+from pine_place.v2.legalization import legalize_placement
+from pine_place.v2.objectives import boundary_penalty, hard_macro_overlap_penalty, smooth_hpwl
+from pine_place.v2.optimizer import ObjectiveWeights, OptimizerConfig, StageConfig, default_stage_schedule, optimize_placement
+from pine_place.v2.placement_state import PlacementState
 
 
 ConfigLike = Optional[Union[str, OptimizerConfig, Dict[str, Any]]]

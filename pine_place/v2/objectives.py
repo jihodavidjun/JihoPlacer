@@ -1,4 +1,4 @@
-"""Differentiable objective terms for JihoPlace v2."""
+"""Differentiable objective terms for PinePlace v2."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
-from jiho_place.v2.placement_state import PlacementState
+from pine_place.v2.placement_state import PlacementState
 
 
 def smooth_hpwl(
