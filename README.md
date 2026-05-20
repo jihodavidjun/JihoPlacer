@@ -87,8 +87,6 @@ The benchmark package also exposes an evaluator console script when it is instal
 
 ## IBM Results
 
-Measured from `experiments/results/heuristic_600s_cb6badb_summary.csv`.
-
 | Benchmark | Proxy | Runtime s | Selected candidate |
 |---|---:|---:|---|
 | ibm01 | 1.05186 | 829.900 | heuristic_exact_cd_step1+full_soft |
@@ -186,7 +184,6 @@ The image copies `pine_place/` and `submissions/` so the primary placer can impo
 
 ## Future Work
 
-- Tighter integration with DREAMPlace/Xplace-style global placement.
+- Tighter integration with modern global placement frameworks.
 - Learned candidate ranking for local search moves.
 - Stronger routability-aware gradients and faster proxy approximations.
-- Tier 2 spacing-aware optimization before ORFS placement export.
