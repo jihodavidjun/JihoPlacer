@@ -1302,31 +1302,55 @@ class JihoPlacer:
                 from jiho_place.v1.heuristic_search import HeuristicSearchGenerator
 
                 hs_budget = min(1800.0, max(30.0, float(os.environ.get("JIHO_HEURISTIC_TIME", "900"))))
-                hs_start, hs_start_proxy, hs_exact_eval_s, hs_start_log = self._hotspot_cd_start_candidate(
-                    candidates, benchmark
-                )
-                hs_generator = HeuristicSearchGenerator(device=self._soft_global_device(), seed=self.base_seed + 1229)
-                heuristic_candidates = hs_generator.generate(
-                    engine=self,
-                    candidates=candidates,
-                    benchmark=benchmark,
-                    movable=movable,
-                    sizes=sizes,
-                    half_w=half_w,
-                    half_h=half_h,
-                    cw=cw,
-                    ch=ch,
-                    edges=edges,
-                    time_budget_s=hs_budget,
-                    start_candidate=hs_start,
-                    start_proxy=hs_start_proxy,
-                    exact_eval_time_s=hs_exact_eval_s,
-                )
-                for hs_candidate, hs_record, hs_log in heuristic_candidates:
-                    candidates.append(hs_candidate)
-                    generated_records.append(hs_record)
-                    legal_logs.append(hs_log)
-                self.heuristic_search_log = ";".join([hs_start_log] + hs_generator.logs)
+                hs_force = os.environ.get("JIHO_HEURISTIC_FORCE", "0") == "1"
+                hs_max_hard = int(os.environ.get("JIHO_HEURISTIC_MAX_HARD", "550"))
+                hs_max_exact_s = float(os.environ.get("JIHO_HEURISTIC_MAX_EXACT_EVAL_S", "20.0"))
+                hs_skip_names = {
+                    item.strip()
+                    for item in os.environ.get("JIHO_HEURISTIC_SKIP_BENCHES", "ibm07").split(",")
+                    if item.strip()
+                }
+                hs_bench_name = str(getattr(benchmark, "name", ""))
+                hs_skip_reason = ""
+                if not hs_force and hs_bench_name in hs_skip_names:
+                    hs_skip_reason = f"benchmark={hs_bench_name}"
+                elif not hs_force and int(benchmark.num_hard_macros) >= hs_max_hard:
+                    hs_skip_reason = f"hard={int(benchmark.num_hard_macros)}>=max_hard={hs_max_hard}"
+
+                if hs_skip_reason:
+                    self.heuristic_search_log = f"skipped={hs_skip_reason}"
+                    legal_logs.append(f"heuristic_search_skipped|{hs_skip_reason}")
+                else:
+                    hs_start, hs_start_proxy, hs_exact_eval_s, hs_start_log = self._hotspot_cd_start_candidate(
+                        candidates, benchmark
+                    )
+                    if not hs_force and hs_exact_eval_s > hs_max_exact_s:
+                        hs_skip_reason = f"exact_eval_s={hs_exact_eval_s:.3f}>max={hs_max_exact_s:.3f}"
+                        self.heuristic_search_log = f"{hs_start_log};skipped={hs_skip_reason}"
+                        legal_logs.append(f"heuristic_search_skipped|{hs_skip_reason}")
+                    else:
+                        hs_generator = HeuristicSearchGenerator(device=self._soft_global_device(), seed=self.base_seed + 1229)
+                        heuristic_candidates = hs_generator.generate(
+                            engine=self,
+                            candidates=candidates,
+                            benchmark=benchmark,
+                            movable=movable,
+                            sizes=sizes,
+                            half_w=half_w,
+                            half_h=half_h,
+                            cw=cw,
+                            ch=ch,
+                            edges=edges,
+                            time_budget_s=hs_budget,
+                            start_candidate=hs_start,
+                            start_proxy=hs_start_proxy,
+                            exact_eval_time_s=hs_exact_eval_s,
+                        )
+                        for hs_candidate, hs_record, hs_log in heuristic_candidates:
+                            candidates.append(hs_candidate)
+                            generated_records.append(hs_record)
+                            legal_logs.append(hs_log)
+                        self.heuristic_search_log = ";".join([hs_start_log] + hs_generator.logs)
             except Exception as exc:
                 self.heuristic_search_log = f"failed={type(exc).__name__}:{exc}"
                 legal_logs.append(f"heuristic_search_failed={type(exc).__name__}")
