@@ -1,6 +1,6 @@
 # PinePlace
 
-PinePlace is a macro-placement framework for fast proxy-aware macro layout optimization. It combines GPU-assisted analytical placement, candidate selection, and targeted local refinement to produce legal macro placements on standard academic benchmarks. The primary entrypoint is:
+PinePlace is a macro placement framework for fast proxy-aware macro layout optimization. It combines GPU-assisted analytical placement, candidate selection, and targeted local refinement to produce legal macro placements on standard academic benchmarks. The primary entrypoint is:
 
 ```text
 submissions/pineplace/placer.py
