@@ -22,6 +22,8 @@ The project also contains experimental SA, v2, and v3 refinement hooks, but the 
 
 PinePlace is designed to be useful as a macro initialization or post-processing layer around modern industrial placers. Engines such as DREAMPlace or Xplace can provide strong continuous/global placement, while PinePlace can add proxy-aware macro polishing, legality repair, and targeted congestion/density escape moves.
 
+PinePlace is implemented as a standalone PyTorch/NumPy framework rather than as a wrapper around DREAMPlace, Xplace, Triton kernels, or custom CUDA extensions. That makes the code easier to inspect and port, while leaving a clear path for future acceleration and integration with production-grade analytical placers.
+
 ## Strengths And Limitations
 
 Strengths:
@@ -29,11 +31,13 @@ Strengths:
 - Produces legal IBM placements with zero reported overlaps in the measured full-suite run.
 - Combines global analytical placement with local, exact proxy-aware refinement.
 - Uses adaptive cheap screening and exact evaluation to spend expensive proxy calls where they matter most.
+- Does not depend on custom CUDA builds or external analytical placer binaries for the default IBM proxy path.
 - Works well as a refinement layer on top of stronger global placers or learned placement proposals.
 
 Limitations:
 
 - Runtime is intentionally search-heavy; full-suite runs are measured in hours, not seconds.
+- The slowest measured IBM run was `ibm17` at `2518.498 s`, below a 1 hour per-benchmark cap on the local machine, but runtime should still be rechecked on different hardware.
 - Exact proxy evaluation becomes expensive on large designs, so some stages rely on cheaper surrogate scoring.
 - The current NG45/WNS/Area validation path depends on a working OpenROAD-flow-scripts environment.
 - Results are not uniformly better on every benchmark; the strongest gains come from benchmarks where the heuristic search path is selected.
@@ -185,5 +189,6 @@ The image copies `pine_place/` and `submissions/` so the primary placer can impo
 ## Future Work
 
 - Tighter integration with modern global placement frameworks.
+- Optional Triton/custom CUDA kernels for faster density, congestion, and candidate scoring.
 - Learned candidate ranking for local search moves.
 - Stronger routability-aware gradients and faster proxy approximations.
