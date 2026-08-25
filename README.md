@@ -1,46 +1,31 @@
 # PinePlace
 
-PinePlace is a macro placement framework for fast proxy-aware macro layout optimization. It combines GPU-assisted analytical placement, candidate selection, and targeted local refinement to produce legal macro placements on standard academic benchmarks. The primary entrypoint is:
+PinePlace is a macro placement framework for fast proxy-aware macro layout optimization. It combines GPU-assisted analytical placement, candidate selection, and targeted local refinement to produce legal macro placements on standard academic benchmarks. 
 
-```text
-submissions/pineplace/placer.py
-```
+PinePlace was originally developed for the **Partcl × Hudson River Trading (HRT) Macro Placement Challenge 2026** and was subsequently refined and evaluated across the IBM benchmark suite.
 
-PinePlace has been verified on the full IBM benchmark suite with zero reported overlaps in the measured runs below.
+The primary entry point is:
+
+`submissions/pineplace/placer.py`
 
 ## Method
 
-PinePlace starts from global soft/hard macro placement candidates and then applies proxy-aware local refinement. The default runtime path uses:
+PinePlace generates multiple global macro-placement candidates and then selectively refines promising solutions using local search.
+
+The default flow combines:
 
 - global candidate generation for soft and hard macro layouts,
-- hotspot micro coordinate descent for local congestion/density pressure,
-- a tuned 600 second heuristic search budget,
-- coordinate descent, LNS-style repair, push-chain moves, and basin repair,
-- adaptive exact-vs-cheap proxy evaluation so larger benchmarks remain tractable.
+- density- and congestion-aware refinement,
+- hotspot-focused coordinate descent,
+- push-chain moves for local placement repair,
+- cheap candidate screening followed by more expensive proxy evaluation,
+- final candidate selection based on the placement proxy.
 
-The project also contains experimental SA, v2, and v3 refinement hooks, but the default production path is the tuned PinePlace v1 engine.
+The main idea is to avoid applying expensive refinement uniformly. PinePlace first explores a broader set of candidate placements, identifies promising regions of the search space, and then applies targeted local optimization where additional proxy evaluations are most useful.
 
-PinePlace is designed to be useful as a macro initialization or post-processing layer around modern industrial placers. Engines such as DREAMPlace or Xplace can provide strong continuous/global placement, while PinePlace can add proxy-aware macro polishing, legality repair, and targeted congestion/density escape moves.
+The framework is implemented directly in PyTorch and NumPy rather than wrapping an external analytical placer or relying on custom CUDA extensions.
 
-PinePlace is implemented as a standalone PyTorch/NumPy framework rather than as a wrapper around DREAMPlace, Xplace, Triton kernels, or custom CUDA extensions. That makes the code easier to inspect and port, while leaving a clear path for future acceleration and integration with production-grade analytical placers.
-
-## Strengths And Limitations
-
-Strengths:
-
-- Produces legal IBM placements with zero reported overlaps in the measured full-suite run.
-- Combines global analytical placement with local, exact proxy-aware refinement.
-- Uses adaptive cheap screening and exact evaluation to spend expensive proxy calls where they matter most.
-- Does not depend on custom CUDA builds or external analytical placer binaries for the default IBM proxy path.
-- Works well as a refinement layer on top of stronger global placers or learned placement proposals.
-
-Limitations:
-
-- Runtime is intentionally search-heavy; full-suite runs are measured in hours, not seconds.
-- The slowest measured IBM run was `ibm17` at `2518.498 s`, below a 1 hour per-benchmark cap on the local machine, but runtime should still be rechecked on different hardware.
-- Exact proxy evaluation becomes expensive on large designs, so some stages rely on cheaper surrogate scoring.
-- The current NG45/WNS/Area validation path depends on a working OpenROAD-flow-scripts environment.
-- Results are not uniformly better on every benchmark; the strongest gains come from benchmarks where the heuristic search path is selected.
+Experimental refinement hooks are also present in the repository, but the reported IBM results use the tuned PinePlace path.
 
 ## Setup
 
@@ -51,11 +36,11 @@ git submodule update --init --recursive
 uv sync
 ```
 
-The repository expects the benchmark/evaluation package under `third_party/macro-place-challenge-2026` and uses `external/MacroPlacement` as the benchmark path.
+The repository expects the benchmark/evaluation package under `third_party/macro-place-challenge-2026` and uses `external/MacroPlacement` as the benchmark path for the IBM evaluation flow.
 
-## IBM Proxy Evaluation
+## Running PinePlace
 
-Run all 17 IBM benchmarks:
+### Run all 17 IBM benchmarks
 
 ```bash
 cd /path/to/PinePlace
@@ -71,7 +56,7 @@ uv run python scripts/run_proxy_experiments.py \
   --notes pineplace_all
 ```
 
-Run one benchmark:
+### Run one benchmark
 
 ```bash
 cd /path/to/PinePlace
@@ -87,9 +72,11 @@ uv run python scripts/run_proxy_experiments.py \
   --notes pineplace_ibm01
 ```
 
-The benchmark package also exposes an evaluator console script when it is installed as a project, but the commands above are preferred because they run from this repository directly.
+## IBM Benchmark Evaluation
 
-## IBM Results
+PinePlace is evaluated across the full 17-design IBM benchmark suite available through the project evaluation environment.
+
+### Results
 
 | Benchmark | Proxy | Runtime s | Selected candidate |
 |---|---:|---:|---|
@@ -111,84 +98,48 @@ The benchmark package also exposes an evaluator console script when it is instal
 | ibm17 | 1.69601 | 2518.498 | soft_global_congestion_refined+full_soft |
 | ibm18 | 1.76632 | 917.103 | soft_global_topo_group_migrate+full_soft |
 
-Summary:
+### Aggregate Results
 
-- Average IBM proxy: `1.43899`
-- Average IBM runtime: `1030.153 s`
-- Total IBM runtime: `17512.608 s`
-- RePlAce average proxy baseline: `1.45784`
-- PinePlace improves over the RePlAce average by `1.29%` proxy cost across the full IBM suite.
-- On the 5 benchmarks where the tuned heuristic path is selected, PinePlace improves over the RePlAce average by `2.74%`.
-- All listed rows reported `overlaps=0`.
+- PinePlace average proxy: **1.43899**
+- RePlAce average proxy baseline: **1.45784**
+- Average improvement over RePlAce: **1.29%**
+- PinePlace achieves a lower placement objective than RePlAce on **11 of 17** benchmarks.
+- All listed PinePlace placements report `overlaps=0`.
+- Average runtime: **1030.153 s** per benchmark
+- Total measured runtime: **17512.608 s**
 
-Individual benchmark behavior varies. PinePlace is best understood as a proxy-aware framework with strong local-search wins, not as a claim of uniform dominance on every benchmark.
+The strongest gains are benchmark-dependent. PinePlace should therefore be viewed as a macro-placement framework that combines global exploration with targeted local refinement rather than as a method that dominates the baseline on every design.
 
-## NG45 / WNS / Area Evaluation
+## Design Tradeoffs and Limitations
 
-Full-flow NG45 validation uses OpenROAD-flow-scripts. To run the public `ariane133_ng45` flow locally, first generate a placement tensor:
+PinePlace intentionally uses a search-heavy refinement strategy. This enables targeted exploration of alternative macro configurations, but it also makes the current implementation substantially slower than a single-pass placement method.
 
-```bash
-cd /path/to/PinePlace
+Exact proxy evaluation becomes expensive on larger designs, so PinePlace uses cheaper candidate screening before committing additional evaluation effort.
 
-PYTHONPATH=$PWD:$PWD/third_party/macro-place-challenge-2026:$PYTHONPATH \
-UV_CACHE_DIR=/tmp/uv-cache-pineplace \
-PINE_SUBMISSION_TUNED=1 \
-uv run python - <<'PY'
-from pathlib import Path
-import torch
-from macro_place.benchmark import Benchmark
-from submissions.pineplace.placer import PinePlace
+The measured runtime varies considerably by benchmark. The slowest listed run is `ibm17` at approximately **2518 s**.
 
-benchmark = Benchmark.load(
-    "third_party/macro-place-challenge-2026/benchmarks/processed/public/ariane133_ng45.pt"
-)
-placement = PinePlace().place(benchmark)
+Results are also benchmark-dependent: although PinePlace improves the average proxy and outperforms RePlAce on 11 of 17 designs, it does not improve the objective on every benchmark.
 
-out = Path("experiments/results/pineplace_ariane133_ng45.pt")
-out.parent.mkdir(parents=True, exist_ok=True)
-torch.save(placement, out)
-print(f"saved {out}")
-PY
-```
-
-Then run the ORFS wrapper:
-
-```bash
-cd /path/to/PinePlace/third_party/macro-place-challenge-2026
-
-PYTHONPATH=/path/to/PinePlace:$PWD:$PYTHONPATH \
-UV_CACHE_DIR=/tmp/uv-cache-pineplace \
-uv run python scripts/evaluate_with_orfs.py \
-  --benchmark ariane133_ng45 \
-  --placement /path/to/PinePlace/experiments/results/pineplace_ariane133_ng45.pt \
-  --orfs-root /path/to/OpenROAD-flow-scripts \
-  --no-docker
-```
-
-Remove `--no-docker` to use ORFS Docker mode. Native mode requires `yosys` and `openroad` on `PATH`; Docker mode requires permission to access the Docker daemon.
-
-Local ORFS status:
-
-- The wrapper successfully loaded `ariane133_ng45`, generated macro placement TCL, and computed placement proxy `0.754263`.
-- WNS, TNS, and Area are not claimed from local results.
-- Native ORFS failed locally because `yosys` and `openroad` were unavailable.
-- Docker ORFS failed locally because the user did not have Docker socket permission.
-
-The command above follows the provided ORFS path. It should produce WNS/TNS/Area in an evaluation environment or on any machine with a working OpenROAD-flow-scripts setup.
+The current results should therefore be interpreted as **placement-proxy results on the IBM benchmark suite**, not as post-route timing, power, or area claims.
 
 ## Docker Runtime
 
-This repository includes a `Dockerfile` for containerized environments that build the project image directly. It starts from:
+The repository includes a `Dockerfile` based on:
 
-```text
-pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
-```
+`pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`
 
-The image copies `pine_place/` and `submissions/` so the primary placer can import the full PinePlace framework even if an evaluator invokes only `submissions/pineplace/placer.py`.
+The image includes the PinePlace framework and submission code so that:
+
+`submissions/pineplace/placer.py`
+
+can import the full implementation in containerized evaluation environments.
 
 ## Future Work
 
-- Tighter integration with modern global placement frameworks.
-- Optional Triton/custom CUDA kernels for faster density, congestion, and candidate scoring.
-- Learned candidate ranking for local search moves.
-- Stronger routability-aware gradients and faster proxy approximations.
+Potential extensions include:
+
+- tighter integration with modern global-placement frameworks,
+- faster density, congestion, and candidate scoring,
+- learned candidate ranking for local-search moves,
+- stronger routability-aware optimization,
+- faster approximations for expensive placement-proxy evaluation.
